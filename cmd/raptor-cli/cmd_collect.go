@@ -187,7 +187,7 @@ SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 }
 
 func pollFlowCompletion(clientID, flowID, artifact string, maxRetries, delaySeconds int) error {
-	donePattern := fmt.Sprintf("Collection %s is done after", artifact)
+	donePattern := fmt.Sprintf("^Collection %s", artifact)
 	vql := fmt.Sprintf(`
 SELECT message FROM flow_logs(client_id=%s, flow_id=%s)
 WHERE message =~ %s
