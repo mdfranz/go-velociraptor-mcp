@@ -40,7 +40,7 @@ Prefer a multi-binary layout with shared core logic under `internal/raptor/`.
 internal/raptor/
   config.go       # YAML loading, env overrides, validation
   client.go       # gRPC/mTLS client, query execution, retries/timeouts
-  schemas.go      # typed MCP input structs with Validate()
+  schemas.go      # typed input structs with Validate()
   sanitize.go     # VQL escaping and identifier validation
   results.go      # response shaping, truncation, compaction helpers
   errors.go       # API/tool error helpers
@@ -48,6 +48,17 @@ internal/raptor/
 cmd/raptor-mcp/
   main.go         # bootstrap, logger, lockfile, stdio loop
   tools.go        # tool schemas, registration, handlers
+  version.go      # build-time version injection
+
+cmd/raptor-cli/
+  main.go         # cobra root, global flags, config bootstrap
+  cmd_client.go   # client_info, list_clients
+  cmd_artifact.go # list_artifacts, artifact_details
+  cmd_collect.go  # collect_artifact, get_collection_results, realtime_collect
+  cmd_hunt.go     # hunt_across_fleet, get_hunt_results
+  cmd_org.go      # list_orgs
+  cmd_vql.go      # run_vql (gated by --dangerous)
+  output.go       # table/JSON/YAML output formatting
   version.go      # build-time version injection
 
 tools/
@@ -59,9 +70,10 @@ Makefile
 ```
 
 Why this layout:
-- shared Velociraptor access logic can be reused by a future CLI or TUI;
-- handlers stay transport-focused instead of embedding VQL assembly and decoding;
-- validation structs are tested once and reused across tools.
+- `internal/raptor/` is the single source of truth for config, the gRPC client, sanitization, and result shaping — both binaries draw from it with no duplication;
+- `cmd/raptor-mcp/` stays a thin MCP transport adapter;
+- `cmd/raptor-cli/` is a thin cobra command adapter over the same shared core;
+- validation structs, timeout tiers, and VQL sanitization are tested once and exercised by both.
 
 If the project remains small, a single package under `cmd/raptor-mcp/` is still acceptable. The rule is to keep transport concerns thin, not to force an early package split.
 
@@ -215,7 +227,7 @@ Environment variables should only control MCP-specific behavior plus safe runtim
 | `RAPTOR_TIMEOUT_SECONDS` | No | `300` | base tool timeout |
 | `RAPTOR_LOG_FILE` | No | `raptor-mcp.log` | logfile path, `"off"` disables |
 | `RAPTOR_LOCK_FILE` | No | `raptor-mcp.lock` | PID lockfile, `"off"` disables |
-| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | No | `debug` | `debug`, `info`, `warn`, `error` |
 
 Validation:
 - fail if `CACertificate`, `ClientCert`, `ClientPrivateKey`, or `APIConnectionString` is empty;
@@ -1051,12 +1063,18 @@ if __name__ == "__main__":
 ### 8.3 Makefile Targets
 
 ```makefile
-.PHONY: build test test-e2e fmt vet
+.PHONY: build build-mcp build-cli test test-e2e fmt vet
 
-APP_NAME = raptor-mcp
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+LDFLAGS    := -X main.version=$(GIT_COMMIT)
 
-build:
-	go build -ldflags "-X main.version=$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)" -o $(APP_NAME) ./cmd/raptor-mcp
+build: build-mcp build-cli
+
+build-mcp:
+	go build -ldflags "$(LDFLAGS)" -o raptor-mcp ./cmd/raptor-mcp
+
+build-cli:
+	go build -ldflags "$(LDFLAGS)" -o raptor-cli ./cmd/raptor-cli
 
 test:
 	go test ./...
@@ -1206,18 +1224,34 @@ Rule:
 
 ## 13. Implementation Checklist
 
-- [ ] `internal/raptor/config.go` - YAML discovery, env overrides, validation
-- [ ] `internal/raptor/client.go` - gRPC/mTLS connection and `RunVQL`
-- [ ] `internal/raptor/sanitize.go` - `vqlLiteral`, validators, env dict builder
-- [ ] `internal/raptor/results.go` - truncation and optional compaction helpers
-- [ ] `internal/raptor/errors.go` - result helpers
-- [ ] `internal/raptor/schemas.go` - typed tool inputs with `Validate()`
-- [ ] `cmd/raptor-mcp/main.go` - bootstrap, logger, lockfile, stdio loop
-- [ ] `cmd/raptor-mcp/tools.go` - schemas, registration, handlers
-- [ ] `cmd/raptor-mcp/version.go` - build-time version string
-- [ ] `tools/test_mcp.py` - end-to-end stdio harness
-- [ ] `Makefile` - build, test, format, vet, e2e targets
+### Shared core (`internal/raptor/`)
+- [ ] `config.go` - YAML discovery, env overrides, validation
+- [ ] `client.go` - gRPC/mTLS connection and `RunVQL`
+- [ ] `sanitize.go` - `vqlLiteral`, validators, env dict builder
+- [ ] `results.go` - truncation and optional compaction helpers
+- [ ] `errors.go` - result helpers
+- [ ] `schemas.go` - typed inputs with `Validate()`
+
+### MCP server (`cmd/raptor-mcp/`)
+- [ ] `main.go` - bootstrap, logger, lockfile, stdio loop
+- [ ] `tools.go` - schemas, registration, handlers
+- [ ] `version.go` - build-time version string
 - [ ] all logs routed to logfile or `stderr`, never `stdout`
 - [ ] strict argument decoding enabled for every tool
 - [ ] dangerous tools gated and denylist-aware
 - [ ] truncation enforced on all large responses
+
+### CLI (`cmd/raptor-cli/`)
+- [ ] `main.go` - cobra root, `--config`/`--org`/`--output`/`--dangerous` global flags
+- [ ] `cmd_client.go` - `client info`, `client list`
+- [ ] `cmd_artifact.go` - `artifact list`, `artifact details`
+- [ ] `cmd_collect.go` - `collect`, `collect results`, `collect realtime`
+- [ ] `cmd_hunt.go` - `hunt run`, `hunt results`
+- [ ] `cmd_org.go` - `org list`
+- [ ] `cmd_vql.go` - `vql run` (gated by `--dangerous`)
+- [ ] `output.go` - table (default), JSON (`--output json`), YAML (`--output yaml`)
+- [ ] `version.go` - build-time version string
+
+### Project
+- [ ] `tools/test_mcp.py` - end-to-end stdio harness
+- [ ] `Makefile` - `build`, `build-mcp`, `build-cli`, `test`, `fmt`, `vet`, `test-e2e`

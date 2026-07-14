@@ -1,0 +1,18 @@
+# Binaries
+/raptor-cli
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# OS files
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Go files
+*.test
+*.out
