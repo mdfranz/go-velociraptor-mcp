@@ -154,13 +154,55 @@ run_contains "collect run NetstatEnriched returns flow_id" "F." \
     collect run --client "${CLIENT_A}" --artifact Linux.Network.NetstatEnriched
 
 echo
+echo "=== collect list ==="
+
+run_contains "collect list on client A" "F." \
+    collect list --client "${CLIENT_A}"
+
+run_contains "collect list on client B" "F." \
+    collect list --client "${CLIENT_B}"
+
+run_contains "collect list --limit 5 returns at most 5 rows" "F." \
+    collect list --client "${CLIENT_A}" --limit 5
+
+run_contains "collect list shows artifact names" "Generic.Client" \
+    collect list --client "${CLIENT_A}" -o json
+
+echo
 echo "=== VQL: output formats ==="
 
 run_contains "json output" '"OrgId"' \
     --dangerous vql run "SELECT OrgId FROM orgs()" -o json
 
+run_contains "yaml output" 'OrgId' \
+    --dangerous vql run "SELECT OrgId FROM orgs()" -o yaml
+
 run_contains "table output (default)" "OrgId" \
     --dangerous vql run "SELECT OrgId FROM orgs()"
+
+echo
+echo "=== vql export ==="
+
+EXPORT_TMP=$(mktemp -d)
+
+run_contains "vql export writes JSONL file" "done:" \
+    --dangerous vql export "SELECT OrgId, Name FROM orgs()" --out "${EXPORT_TMP}/orgs.jsonl"
+
+# verify the file was actually written and contains valid JSON
+echo -n "  export file exists and is valid JSONL ... "
+export_file=$(ls "${EXPORT_TMP}"/orgs_*.jsonl 2>/dev/null | head -1)
+if [[ -n "$export_file" ]] && python3 -c "import json,sys; [json.loads(l) for l in open('${export_file}') if l.strip()]" 2>/dev/null; then
+    echo -e "${GREEN}PASS${RESET}"
+    PASS=$((PASS+1))
+else
+    echo -e "${RED}FAIL${RESET} (file: ${export_file:-none})"
+    FAIL=$((FAIL+1))
+fi
+
+run_fails "vql export blocked without --dangerous" \
+    vql export "SELECT 1 FROM scope()" --out "${EXPORT_TMP}/nope.jsonl"
+
+rm -rf "${EXPORT_TMP}"
 
 echo
 echo "=== Results ==="

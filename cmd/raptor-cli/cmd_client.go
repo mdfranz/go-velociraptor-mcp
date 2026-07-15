@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/mdfranz/go-velociraptor-mcp/internal/raptor"
 	"github.com/spf13/cobra"
 )
 
@@ -85,5 +86,5 @@ ORDER BY LastSeen DESC LIMIT %d`,
 }
 
 func quote(s string) string {
-	return "'" + s + "'"
+	return raptor.VQLLiteral(s)
 }

@@ -20,11 +20,16 @@ var (
 	flagCollectDelay    int
 	flagCollectFields   string
 	flagCollectSource   string
+	flagCollectListLimit int
 )
 
 func init() {
 	rootCmd.AddCommand(collectCmd)
-	collectCmd.AddCommand(collectRunCmd, collectResultsCmd, collectRealtimeCmd)
+	collectCmd.AddCommand(collectRunCmd, collectResultsCmd, collectRealtimeCmd, collectListCmd)
+
+	collectListCmd.Flags().StringVar(&flagCollectClientID, "client", "", "client_id (required)")
+	collectListCmd.Flags().IntVar(&flagCollectListLimit, "limit", 20, "max results")
+	_ = collectListCmd.MarkFlagRequired("client")
 
 	collectRunCmd.Flags().StringVar(&flagCollectClientID, "client", "", "client_id (required)")
 	collectRunCmd.Flags().StringVar(&flagCollectArtifact, "artifact", "", "artifact name (required)")
@@ -116,6 +121,30 @@ var collectRealtimeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		rows, err := client.RunVQL(ctx(), vql, orgID())
+		if err != nil {
+			return err
+		}
+		printRows(rows)
+		return nil
+	},
+}
+
+var collectListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List past and in-progress flows for a client",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		vql := fmt.Sprintf(`
+SELECT session_id AS flow_id,
+       request.artifacts AS artifacts,
+       state,
+       timestamp(epoch=create_time) AS created,
+       total_collected_rows AS rows,
+       total_uploaded_files AS uploaded_files,
+       request.creator AS creator
+FROM flows(client_id=%s)
+ORDER BY created DESC LIMIT %d`,
+			raptor.VQLLiteral(flagCollectClientID), flagCollectListLimit)
 		rows, err := client.RunVQL(ctx(), vql, orgID())
 		if err != nil {
 			return err

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+
+	"gopkg.in/yaml.v3"
 )
 
 func printRows(rows []map[string]any) {
@@ -18,6 +20,9 @@ func printRows(rows []map[string]any) {
 	case "json":
 		b, _ := json.MarshalIndent(rows, "", "  ")
 		fmt.Println(string(b))
+	case "yaml":
+		b, _ := yaml.Marshal(rows)
+		fmt.Print(string(b))
 	default:
 		printTable(rows)
 	}

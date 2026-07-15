@@ -101,6 +101,11 @@ go build -o raptor-mcp ./cmd/raptor-mcp
   ```bash
   ./raptor-cli collect run --client "C.12345" --artifact "Generic.Client.Info" --param Key=Value
   ```
+* **List Collections**:
+  List past and in-progress flows for a client, ordered most-recent first.
+  ```bash
+  ./raptor-cli collect list --client "C.12345" --limit 20
+  ```
 * **Retrieve Results**:
   Poll and fetch results for an active or completed collection flow.
   ```bash
@@ -116,7 +121,12 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 * **Run Query**:
   Execute custom VQL queries directly against the Velociraptor API.
   ```bash
-  ./raptor-cli vql run "SELECT * FROM info()" --dangerous
+  ./raptor-cli --dangerous vql run "SELECT * FROM info()"
+  ```
+* **Export to JSONL**:
+  Stream VQL results to a timestamped JSONL file on disk. Rolls to a new file when the size limit is reached. Progress and file paths are printed to stderr.
+  ```bash
+  ./raptor-cli --dangerous vql export "SELECT * FROM clients()" --out /tmp/clients.jsonl --max-mb 50
   ```
 
 ---
@@ -133,7 +143,7 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 | `VELOCIRAPTOR_ORG_ID` | No | empty | Default organization ID scope |
 | `ENABLE_DANGEROUS_TOOLS` | No | `false` | Must be set to `true` to register raw VQL execution tools (`run_vql`) |
 | `VELOCIRAPTOR_DISABLED_TOOLS`| No | empty | Comma-separated list of tool names to hide from the client |
-| `RAPTOR_MAX_RESPONSE_BYTES` | No | `32000` | Truncation limit for tool response size in bytes |
+| `RAPTOR_MAX_RESPONSE_BYTES` | No | `512000` | Truncation limit for tool response size in bytes |
 | `RAPTOR_TIMEOUT_SECONDS` | No | `300` | Tool timeout duration in seconds |
 | `RAPTOR_LOG_FILE` | No | `raptor-mcp.log`| Output logfile path. Use `"off"` to disable logging to disk |
 | `RAPTOR_LOCK_FILE` | No | `raptor-mcp.lock`| Exclusivity lockfile path. Use `"off"` to disable |
@@ -194,18 +204,41 @@ To prevent VQL injection attacks during automated execution:
 
 ## Integration Testing
 
-We use Python-based end-to-end integration tests to validate the MCP protocol handler.
+### CLI End-to-End Tests (`tools/test_vql.sh`)
 
-### Run Tests
+A bash test suite validates all `raptor-cli` commands against a live Velociraptor instance. Tests cover client discovery, artifact listing, collection flows, VQL execution, JSONL export, and all output formats.
 
-Ensure you have [uv](https://github.com/astral-sh/uv) or `pip` installed:
+**Prerequisites**: a valid `api_client.yaml` reachable via `VELOCIRAPTOR_API_CONFIG` (or the default discovery chain), and the `raptor-cli` binary built.
 
 ```bash
-# Enter tools directory
-cd tools
+# Build the CLI
+go build -o raptor-cli ./cmd/raptor-cli
 
-# Run test harness
-uv run pytest -v test_mcp.py
+# Run with the binary in the current directory
+CLI=./raptor-cli bash tools/test_vql.sh
+
+# Run with verbose output (shows first 5 lines of each result)
+VERBOSE=1 CLI=./raptor-cli bash tools/test_vql.sh
+```
+
+The script uses two known client IDs (`CLIENT_A` / `CLIENT_B`) and pre-existing flow IDs for `source()` tests. Update these variables at the top of the script if your environment differs.
+
+### MCP Integration Tests (`tools/test_mcp.py`)
+
+An AI-driven end-to-end test harness that spins up `raptor-mcp` as a subprocess and runs a set of DFIR tasks through a Gemini model via pydantic-ai. Results and tool call traces are written to `tools/raptor_mcp_test.log`.
+
+**Prerequisites:**
+- `raptor-mcp` binary built and on PATH (or at the repo root)
+- `GOOGLE_API_KEY` or `GEMINI_API_KEY` set in the environment
+- `VELOCIRAPTOR_API_CONFIG` set or `api_client.yaml` present in the default discovery path
+- [uv](https://github.com/astral-sh/uv) installed
+
+```bash
+# Run with the default model (gemini-3.5-flash)
+uv run tools/test_mcp.py
+
+# Run with a specific model
+uv run tools/test_mcp.py gemini-2.0-flash
 ```
 
 ---
