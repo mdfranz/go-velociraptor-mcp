@@ -168,9 +168,12 @@ Add the server to your Claude Desktop configuration (typically `~/Library/Applic
 4. **`list_artifacts`**: Query and filter forensic artifact signatures.
 5. **`artifact_details`**: Retrieve schemas, parameters, and sources for a forensic artifact.
 6. **`collect_artifact`**: Trigger an asynchronous endpoint collection flow.
-7. **`get_collection_results`**: Poll, wait, and retrieve results for a completed artifact collection flow.
-8. **`realtime_collect`**: Dispatch an artifact collection flow, block until complete, and yield structured results.
-9. **`run_vql`**: Run raw VQL query directly (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+7. **`list_collections`**: List past and in-progress artifact collections (flows) for a client, ordered by most recent first.
+8. **`get_collection_results`**: Poll, wait, and retrieve results for a completed artifact collection flow.
+9. **`realtime_collect`**: Dispatch an artifact collection flow, block until complete, and yield structured results.
+10. **`run_vql`**: Run raw VQL query directly (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+11. **`export_vql`**: Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+
 
 ### Robust Rotating Logger
 
