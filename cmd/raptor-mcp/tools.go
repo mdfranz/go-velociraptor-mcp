@@ -1,16 +1,62 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mdfranz/go-velociraptor-mcp/internal/raptor"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+const logQueryMaxLen = 120
+
+func truncateLogStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// toolAttrs builds slog key-value pairs for a tool call, including all scalar
+// string/int/bool arguments so logs show identifiers like client_id, flow_id, etc.
+func toolAttrs(name string, req *mcp.CallToolRequest) []any {
+	attrs := []any{"name", name}
+	if req.Params.Arguments == nil {
+		return attrs
+	}
+	raw, err := json.Marshal(req.Params.Arguments)
+	if err != nil {
+		return attrs
+	}
+	var args map[string]any
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return attrs
+	}
+	// log scalar args only; skip objects/arrays (e.g. parameters) to keep lines readable
+	keys := []string{"client_id", "flow_id", "artifact", "artifact_name", "hostname", "search", "os_filter", "org_id", "query"}
+	for _, k := range keys {
+		if v, ok := args[k]; ok {
+			switch s := v.(type) {
+			case string:
+				if k == "query" {
+					attrs = append(attrs, k, truncateLogStr(s, logQueryMaxLen))
+				} else {
+					attrs = append(attrs, k, s)
+				}
+			case float64, bool:
+				attrs = append(attrs, k, v)
+			}
+		}
+	}
+	return attrs
+}
 
 func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 	disabled := make(map[string]bool, len(cfg.DisabledTools))
@@ -22,11 +68,13 @@ func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 		if !disabled[t.Name] {
 			wrapped := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				start := time.Now()
-				slog.Info("tool execution started", "name", t.Name)
+				attrs := toolAttrs(t.Name, req)
+				slog.Info("tool execution started", attrs...)
 				res, err := h(ctx, req)
 				duration := time.Since(start)
+				dattrs := append(attrs, "duration_ms", duration.Milliseconds())
 				if err != nil {
-					slog.Error("tool execution failed (protocol error)", "name", t.Name, "duration_ms", duration.Milliseconds(), "error", err)
+					slog.Error("tool execution failed (protocol error)", append(dattrs, "error", err)...)
 				} else if res.IsError {
 					var errMsg string
 					if len(res.Content) > 0 {
@@ -34,9 +82,9 @@ func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 							errMsg = tc.Text
 						}
 					}
-					slog.Warn("tool execution returned tool-level error", "name", t.Name, "duration_ms", duration.Milliseconds(), "error", errMsg)
+					slog.Warn("tool execution returned tool-level error", append(dattrs, "error", errMsg)...)
 				} else {
-					slog.Info("tool execution succeeded", "name", t.Name, "duration_ms", duration.Milliseconds())
+					slog.Info("tool execution succeeded", dattrs...)
 				}
 				return res, err
 			}
@@ -50,11 +98,13 @@ func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 	add(toolListArtifacts(), handleListArtifacts(client, cfg))
 	add(toolArtifactDetails(), handleArtifactDetails(client, cfg))
 	add(toolCollectArtifact(), handleCollectArtifact(client, cfg))
+	add(toolListCollections(), handleListCollections(client, cfg))
 	add(toolGetCollectionResults(), handleGetCollectionResults(client, cfg))
 	add(toolRealtimeCollect(), handleRealtimeCollect(client, cfg))
 
 	if cfg.EnableDangerousTools {
 		add(toolRunVQL(), handleRunVQL(client, cfg))
+		add(toolExportVQL(), handleExportVQL(client, cfg))
 	}
 }
 
@@ -141,11 +191,21 @@ func decodeArgs(req *mcp.CallToolRequest) (map[string]any, error) {
 	return out, nil
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+// truncateRows trims a row slice so the marshaled JSON stays under maxBytes,
+// returning the trimmed slice and the number of dropped rows.
+func truncateRows(rows []map[string]any, maxBytes int) ([]map[string]any, int) {
+	if rows == nil {
+		return rows, 0
 	}
-	return s[:max] + fmt.Sprintf("\n\n[... truncated %d bytes ...]", len(s)-max)
+	size := 0
+	for i, row := range rows {
+		b, _ := json.Marshal(row)
+		size += len(b) + 2 // 2 for comma+space
+		if size > maxBytes {
+			return rows[:i], len(rows) - i
+		}
+	}
+	return rows, 0
 }
 
 // --- list_orgs ---
@@ -306,8 +366,13 @@ WHERE name =~ %s`, raptor.VQLLiteral(nameRegex))
 		if err != nil {
 			return toolErr(err), nil
 		}
-		b, _ := json.MarshalIndent(map[string]any{"ok": true, "data": rows}, "", "  ")
-		return textResult(truncate(string(b), cfg.MaxResponseBytes)), nil
+		rows, dropped := truncateRows(rows, cfg.MaxResponseBytes)
+		result := map[string]any{"ok": true, "data": rows}
+		if dropped > 0 {
+			result["truncated"] = dropped
+		}
+		b, _ := json.MarshalIndent(result, "", "  ")
+		return textResult(string(b)), nil
 	}
 }
 
@@ -404,6 +469,54 @@ FROM foreach(row=collection)`,
 	}
 }
 
+// --- list_collections ---
+
+func toolListCollections() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "list_collections",
+		Description: "List past and in-progress artifact collections (flows) for a client, ordered by most recent first.",
+		InputSchema: schema(map[string]any{
+			"client_id": prop("string", "Target client ID"),
+			"limit":     prop("integer", "Max results (default 20)"),
+			"org_id":    prop("string", "Org ID (optional)"),
+		}, "client_id"),
+	}
+}
+
+func handleListCollections(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := decodeArgs(req)
+		if err != nil {
+			return toolErrMsg("invalid arguments: " + err.Error()), nil
+		}
+		clientID := getStr(args, "client_id")
+		if clientID == "" {
+			return toolErrMsg("client_id is required"), nil
+		}
+		limit := getInt(args, "limit", 20)
+		if limit <= 0 || limit > 1000 {
+			return toolErrMsg("limit must be between 1 and 1000"), nil
+		}
+		orgID := client.OrgID(getStr(args, "org_id"))
+		vql := fmt.Sprintf(`
+SELECT session_id AS flow_id,
+       request.artifacts AS artifacts,
+       state,
+       timestamp(epoch=create_time) AS created,
+       total_collected_rows AS rows,
+       total_uploaded_files AS uploaded_files,
+       request.creator AS creator
+FROM flows(client_id=%s)
+ORDER BY created DESC LIMIT %d`,
+			raptor.VQLLiteral(clientID), limit)
+		rows, err := client.RunVQL(ctx, vql, orgID)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return textOK(map[string]any{"ok": true, "data": rows})
+	}
+}
+
 // --- get_collection_results ---
 
 func toolGetCollectionResults() *mcp.Tool {
@@ -451,6 +564,7 @@ WHERE message =~ %s LIMIT 1`,
 
 		for i := 0; i < maxRetries; i++ {
 			if i > 0 {
+				slog.Debug("get_collection_results polling", "flow_id", flowID, "attempt", i+1, "max", maxRetries)
 				time.Sleep(time.Duration(retryDelay) * time.Second)
 			}
 			rows, err := client.RunVQL(ctx, pollVQL, orgID)
@@ -472,8 +586,18 @@ WHERE message =~ %s LIMIT 1`,
 		if err != nil {
 			return toolErr(err), nil
 		}
-		b, _ := json.MarshalIndent(map[string]any{"ok": true, "data": rows}, "", "  ")
-		return textResult(truncate(string(b), cfg.MaxResponseBytes)), nil
+		rows, dropped := truncateRows(rows, cfg.MaxResponseBytes)
+		if dropped > 0 {
+			slog.Warn("get_collection_results truncated", "flow_id", flowID, "rows_returned", len(rows), "rows_dropped", dropped)
+		} else {
+			slog.Debug("get_collection_results rows", "flow_id", flowID, "rows_returned", len(rows))
+		}
+		result := map[string]any{"ok": true, "data": rows}
+		if dropped > 0 {
+			result["truncated"] = dropped
+		}
+		b, _ := json.MarshalIndent(result, "", "  ")
+		return textResult(string(b)), nil
 	}
 }
 
@@ -538,8 +662,13 @@ SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 		if err != nil {
 			return toolErr(err), nil
 		}
-		b, _ := json.MarshalIndent(map[string]any{"ok": true, "data": rows}, "", "  ")
-		return textResult(truncate(string(b), cfg.MaxResponseBytes)), nil
+		rows, dropped := truncateRows(rows, cfg.MaxResponseBytes)
+		result := map[string]any{"ok": true, "data": rows}
+		if dropped > 0 {
+			result["truncated"] = dropped
+		}
+		b, _ := json.MarshalIndent(result, "", "  ")
+		return textResult(string(b)), nil
 	}
 }
 
@@ -567,12 +696,160 @@ func handleRunVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 			return toolErrMsg("query is required"), nil
 		}
 		orgID := client.OrgID(getStr(args, "org_id"))
-		slog.Debug("run_vql query", "query", query, "org_id", orgID)
 		rows, err := client.RunVQL(ctx, query, orgID)
 		if err != nil {
 			return toolErr(err), nil
 		}
-		b, _ := json.MarshalIndent(map[string]any{"ok": true, "data": rows}, "", "  ")
-		return textResult(truncate(string(b), cfg.MaxResponseBytes)), nil
+		rows, dropped := truncateRows(rows, cfg.MaxResponseBytes)
+		if dropped > 0 {
+			slog.Warn("run_vql truncated", "rows_returned", len(rows), "rows_dropped", dropped)
+		} else {
+			slog.Debug("run_vql rows", "rows_returned", len(rows))
+		}
+		result := map[string]any{"ok": true, "data": rows}
+		if dropped > 0 {
+			result["truncated"] = dropped
+		}
+		b, _ := json.MarshalIndent(result, "", "  ")
+		return textResult(string(b)), nil
+	}
+}
+
+// --- export_vql (dangerous) ---
+
+func toolExportVQL() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "export_vql",
+		Description: "Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits. Returns a summary with file path and row count. Only available when dangerous tools are enabled.",
+		InputSchema: schema(map[string]any{
+			"query":       prop("string", "VQL query to execute"),
+			"filepath":    prop("string", "Output file path on the MCP server host (e.g. /tmp/results.jsonl). Files are named with a timestamp suffix and sequence number if they roll over."),
+			"max_file_mb": prop("integer", "Max file size in MB before rolling to a new file (default 100, max 1000)"),
+			"org_id":      prop("string", "Org ID (optional)"),
+		}, "query", "filepath"),
+	}
+}
+
+func handleExportVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := decodeArgs(req)
+		if err != nil {
+			return toolErrMsg("invalid arguments: " + err.Error()), nil
+		}
+		query := getStr(args, "query")
+		if query == "" {
+			return toolErrMsg("query is required"), nil
+		}
+		basePath := getStr(args, "filepath")
+		if basePath == "" {
+			return toolErrMsg("filepath is required"), nil
+		}
+		maxFileMB := getInt(args, "max_file_mb", 100)
+		if maxFileMB <= 0 {
+			maxFileMB = 100
+		}
+		if maxFileMB > 1000 {
+			maxFileMB = 1000
+		}
+		maxFileBytes := int64(maxFileMB) * 1024 * 1024
+		orgID := client.OrgID(getStr(args, "org_id"))
+
+		// Build output path: insert timestamp before extension
+		baseDir := filepath.Dir(basePath)
+		baseName := filepath.Base(basePath)
+		ext := filepath.Ext(baseName)
+		stem := strings.TrimSuffix(baseName, ext)
+		if ext == "" {
+			ext = ".jsonl"
+		}
+		ts := time.Now().UTC().Format("20060102T150405Z")
+
+		if baseDir != "" && baseDir != "." {
+			if err := os.MkdirAll(baseDir, 0o755); err != nil {
+				return toolErr(fmt.Errorf("create output dir: %w", err)), nil
+			}
+		}
+
+		fileIndex := 1
+		var exportedFiles []string
+		totalRows := int64(0)
+
+		newFile := func() (*os.File, *bufio.Writer, string, error) {
+			name := filepath.Join(baseDir, fmt.Sprintf("%s_%s_%03d%s", stem, ts, fileIndex, ext))
+			f, err := os.Create(name)
+			if err != nil {
+				return nil, nil, "", fmt.Errorf("create %s: %w", name, err)
+			}
+			exportedFiles = append(exportedFiles, name)
+			return f, bufio.NewWriterSize(f, 256*1024), name, nil
+		}
+
+		currentFile, currentWriter, currentName, err := newFile()
+		if err != nil {
+			return toolErr(err), nil
+		}
+		var currentBytes int64
+
+		closeCurrentFile := func() error {
+			if err := currentWriter.Flush(); err != nil {
+				return err
+			}
+			return currentFile.Close()
+		}
+
+		slog.Info("export_vql started", "query", query, "filepath", basePath, "max_file_mb", maxFileMB)
+		start := time.Now()
+
+		streamErr := client.StreamVQL(ctx, query, orgID, func(rows []map[string]any) error {
+			for _, row := range rows {
+				data, err := json.Marshal(row)
+				if err != nil {
+					slog.Warn("export_vql: marshal error, skipping row", "error", err)
+					continue
+				}
+
+				// Roll to a new file if this row would push us over the limit
+				if currentBytes > 0 && currentBytes+int64(len(data))+1 > maxFileBytes {
+					if err := closeCurrentFile(); err != nil {
+						return fmt.Errorf("flush %s: %w", currentName, err)
+					}
+					fileIndex++
+					currentBytes = 0
+					currentFile, currentWriter, currentName, err = newFile()
+					if err != nil {
+						return err
+					}
+				}
+
+				currentWriter.Write(data)
+				currentWriter.WriteByte('\n')
+				currentBytes += int64(len(data)) + 1
+				totalRows++
+			}
+			return nil
+		})
+
+		// Always flush+close the last file, even on error
+		if ferr := closeCurrentFile(); ferr != nil && streamErr == nil {
+			streamErr = fmt.Errorf("flush final file: %w", ferr)
+		}
+
+		if streamErr != nil {
+			slog.Error("export_vql failed", "error", streamErr, "rows_so_far", totalRows)
+			return toolErr(streamErr), nil
+		}
+
+		elapsed := time.Since(start)
+		slog.Info("export_vql completed", "total_rows", totalRows, "total_files", len(exportedFiles), "elapsed_ms", elapsed.Milliseconds())
+
+		result := map[string]any{
+			"ok":          true,
+			"total_rows":  totalRows,
+			"total_files": len(exportedFiles),
+			"files":       exportedFiles,
+			"elapsed_ms":  elapsed.Milliseconds(),
+		}
+		b, _ := json.MarshalIndent(result, "", "  ")
+		return textResult(string(b)), nil
 	}
 }

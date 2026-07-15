@@ -110,7 +110,7 @@ func applyEnvOverrides(cfg *Config) {
 	}
 
 	if cfg.MaxResponseBytes <= 0 {
-		cfg.MaxResponseBytes = 32000
+		cfg.MaxResponseBytes = 512000
 	}
 	if cfg.DefaultTimeout <= 0 {
 		cfg.DefaultTimeout = 300 * time.Second

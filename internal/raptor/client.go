@@ -71,6 +71,43 @@ func (c *Client) OrgID(override string) string {
 	return c.cfg.OrgID
 }
 
+// StreamVQL executes a VQL query and calls fn for each decoded batch of rows
+// as they arrive from the gRPC stream. This avoids buffering the entire result
+// set in memory and is used by the export tool to write directly to disk.
+func (c *Client) StreamVQL(ctx context.Context, vql string, orgID string, fn func([]map[string]any) error) error {
+	args := &vql_proto.VQLCollectorArgs{
+		Query: []*vql_proto.VQLRequest{{VQL: vql}},
+	}
+	if orgID != "" {
+		args.OrgId = orgID
+	}
+
+	stream, err := c.stub.Query(ctx, args)
+	if err != nil {
+		return err
+	}
+
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		chunk, err := decodeResponse(resp)
+		if err != nil {
+			return err
+		}
+		if len(chunk) > 0 {
+			if err := fn(chunk); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c *Client) RunVQL(ctx context.Context, vql string, orgID string) ([]map[string]any, error) {
 	args := &vql_proto.VQLCollectorArgs{
 		Query: []*vql_proto.VQLRequest{{VQL: vql}},
