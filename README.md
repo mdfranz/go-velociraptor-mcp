@@ -49,6 +49,13 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 ```
 
 ---
+## 0. Generate a Client Config Yaml
+
+```
+$ sudo -u velociraptor velociraptor --config /etc/velociraptor/server.config.yaml config api_client --name "ExternalToolName" --role administrator /tmp/mcp_client.yaml
+Creating API client file on /tmp/mcp_client.yaml.
+```
+
 
 ## 1. Raptor CLI (`raptor-cli`)
 
