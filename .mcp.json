@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "raptor-mcp": {
+      "command": "/Users/matthew/Code/raptor-mcp/go-velociraptor-mcp/raptor-mcp",
+      "args": [],
+      "env": {
+        "VELOCIRAPTOR_API_CONFIG": "${VELOCIRAPTOR_API_CONFIG}",
+        "VELOCIRAPTOR_ORG_ID": "root",
+        "ENABLE_DANGEROUS_TOOLS": "true",
+        "LOG_LEVEL": "debug"
+      }
+    }
+  }
+}

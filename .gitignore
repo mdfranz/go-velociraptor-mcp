@@ -1,5 +1,6 @@
 # Binaries
 /raptor-cli
+/raptor-mcp
 *.exe
 *.exe~
 *.dll
@@ -16,3 +17,4 @@
 # Go files
 *.test
 *.out
+*.log
