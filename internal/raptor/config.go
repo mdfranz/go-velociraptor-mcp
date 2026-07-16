@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type Config struct {
 	LogLevel             string
 	LogFile              string
 	LockFile             string
+	DataDir              string
 	MaxResponseBytes     int
 	DefaultTimeout       time.Duration
 }
@@ -92,18 +94,23 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	if v := os.Getenv("RAPTOR_MAX_RESPONSE_BYTES"); v != "" {
-		fmt.Sscanf(v, "%d", &cfg.MaxResponseBytes)
+		if parsed, err := strconv.Atoi(v); err == nil {
+			cfg.MaxResponseBytes = parsed
+		}
 	}
 	if v := os.Getenv("RAPTOR_TIMEOUT_SECONDS"); v != "" {
-		var secs int
-		fmt.Sscanf(v, "%d", &secs)
-		cfg.DefaultTimeout = time.Duration(secs) * time.Second
+		if secs, err := strconv.Atoi(v); err == nil {
+			cfg.DefaultTimeout = time.Duration(secs) * time.Second
+		}
 	}
 	if v := os.Getenv("RAPTOR_LOG_FILE"); v != "" {
 		cfg.LogFile = v
 	}
 	if v := os.Getenv("RAPTOR_LOCK_FILE"); v != "" {
 		cfg.LockFile = v
+	}
+	if v := os.Getenv("RAPTOR_DATA_PATH"); v != "" {
+		cfg.DataDir = v
 	}
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v
@@ -117,6 +124,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "debug"
+	}
+	if cfg.LockFile == "" {
+		cfg.LockFile = "raptor-mcp.lock"
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = "data"
 	}
 	if cfg.PinnedServerName == "" {
 		cfg.PinnedServerName = "VelociraptorServer"

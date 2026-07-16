@@ -12,6 +12,8 @@ FLOW_PSLIST_A="F.D9BC4NT839SUU"          # Linux.Sys.Pslist on CLIENT_A
 FLOW_CLIENTINFO_A="F.D9BAAR3MQKQRS"     # Generic.Client.Info on CLIENT_A
 FLOW_NETSTAT_A="F.D9BC8IHAVS0DA"         # Linux.Network.Netstat on CLIENT_A
 FLOW_NETSTAT_ENR_A="F.D9BCAGVRTO3KI"    # Linux.Network.NetstatEnriched on CLIENT_A
+HUNT_A="H.D9CG23F0AUEPE"                 # Test hunt
+HUNT_ARTIFACT_A="Linux.Sys.LastUserLogin"
 PASS=0
 FAIL=0
 
@@ -63,6 +65,9 @@ run_fails() {
 
 echo "=== Discovery ==="
 
+run_contains "server health" "SERVING" \
+    server health
+
 run_contains "list orgs" "root" \
     org list
 
@@ -77,6 +82,18 @@ run_contains "client list --os linux" "linux" \
 
 run_contains "client list --search pi5" "pi5" \
     client list --search pi5
+
+run_contains "client list --online" "client_id" \
+    client list --online --limit 5 -o json
+
+run "client list --label filter" \
+    client list --label "does-not-exist"
+
+run_contains "client describe" "${CLIENT_A}" \
+    client describe --client "${CLIENT_A}" -o json
+
+run_contains "client metadata" '"metadata"' \
+    client metadata --client "${CLIENT_A}" -o json
 
 run_contains "artifact list" "Linux.Sys.Pslist" \
     artifact list --filter "Linux.Sys.Pslist"
@@ -154,6 +171,21 @@ run_contains "collect run NetstatEnriched returns flow_id" "F." \
     collect run --client "${CLIENT_A}" --artifact Linux.Network.NetstatEnriched
 
 echo
+echo "=== flow list and describe ==="
+
+run_contains "flow list on client A" "F." \
+    flow list --client "${CLIENT_A}"
+
+run_contains "flow list --limit 5" "F." \
+    flow list --client "${CLIENT_A}" --limit 5
+
+run_contains "flow describe known flow" "${FLOW_PSLIST_A}" \
+    flow describe --client "${CLIENT_A}" --flow "${FLOW_PSLIST_A}"
+
+run_contains "flow logs show completion" "Collection Linux.Sys.Pslist is done" \
+    flow logs --client "${CLIENT_A}" --flow "${FLOW_PSLIST_A}"
+
+echo
 echo "=== collect list ==="
 
 run_contains "collect list on client A" "F." \
@@ -167,6 +199,21 @@ run_contains "collect list --limit 5 returns at most 5 rows" "F." \
 
 run_contains "collect list shows artifact names" "Generic.Client" \
     collect list --client "${CLIENT_A}" -o json
+
+echo
+echo "=== hunt read operations ==="
+
+run_contains "hunt list" "${HUNT_A}" \
+    hunt list --limit 5
+
+run_contains "hunt describe" "${HUNT_A}" \
+    hunt describe --hunt "${HUNT_A}" -o json
+
+run_contains "hunt flows" "FlowId" \
+    hunt flows --hunt "${HUNT_A}" --limit 5 -o json
+
+run_contains "hunt results" "ClientId" \
+    hunt results --hunt "${HUNT_A}" --artifact "${HUNT_ARTIFACT_A}" --limit 5 -o json
 
 echo
 echo "=== VQL: output formats ==="

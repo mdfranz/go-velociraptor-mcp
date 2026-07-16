@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,9 +14,59 @@ import (
 
 	"github.com/mdfranz/go-velociraptor-mcp/internal/raptor"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 )
 
 const logQueryMaxLen = 120
+
+//go:embed tools.yaml
+var toolDescriptionsFile embed.FS
+
+var toolDescriptions = loadToolDescriptions()
+
+var expectedToolDescriptions = map[string]struct{}{
+	"list_orgs":              {},
+	"client_info":            {},
+	"list_clients":           {},
+	"list_artifacts":         {},
+	"artifact_details":       {},
+	"collect_artifact":       {},
+	"list_collections":       {},
+	"get_collection_results": {},
+	"realtime_collect":       {},
+	"run_vql":                {},
+	"export_vql":             {},
+}
+
+func loadToolDescriptions() map[string]string {
+	data, err := toolDescriptionsFile.ReadFile("tools.yaml")
+	if err != nil {
+		panic(fmt.Sprintf("read embedded tool descriptions: %v", err))
+	}
+	var descriptions map[string]string
+	if err := yaml.Unmarshal(data, &descriptions); err != nil {
+		panic(fmt.Sprintf("parse embedded tool descriptions: %v", err))
+	}
+	for name := range expectedToolDescriptions {
+		if descriptions[name] == "" {
+			panic(fmt.Sprintf("missing description for tool %q", name))
+		}
+	}
+	for name := range descriptions {
+		if _, ok := expectedToolDescriptions[name]; !ok {
+			panic(fmt.Sprintf("unknown tool description %q", name))
+		}
+	}
+	return descriptions
+}
+
+func toolDescription(name string) string {
+	description, ok := toolDescriptions[name]
+	if !ok || description == "" {
+		panic(fmt.Sprintf("missing description for tool %q", name))
+	}
+	return description
+}
 
 func truncateLogStr(s string, n int) string {
 	if len(s) <= n {
@@ -67,6 +118,11 @@ func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 	add := func(t *mcp.Tool, h mcp.ToolHandler) {
 		if !disabled[t.Name] {
 			wrapped := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if cfg.DefaultTimeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, cfg.DefaultTimeout)
+					defer cancel()
+				}
 				start := time.Now()
 				attrs := toolAttrs(t.Name, req)
 				slog.Info("tool execution started", attrs...)
@@ -213,7 +269,7 @@ func truncateRows(rows []map[string]any, maxBytes int) ([]map[string]any, int) {
 func toolListOrgs() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "list_orgs",
-		Description: "List all Velociraptor organizations (tenants). Call this first if the org is unknown.",
+		Description: toolDescription("list_orgs"),
 		InputSchema: schema(map[string]any{}),
 	}
 }
@@ -233,10 +289,10 @@ func handleListOrgs(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 func toolClientInfo() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "client_info",
-		Description: "Find a client by hostname or FQDN. Call before collection tools when you only know the hostname.",
+		Description: toolDescription("client_info"),
 		InputSchema: schema(map[string]any{
-			"hostname":       prop("string", "Hostname or FQDN to search for (regex)"),
-			"org_id":         prop("string", "Org ID (optional)"),
+			"hostname":        prop("string", "Hostname or FQDN to search for (regex)"),
+			"org_id":          prop("string", "Org ID (optional)"),
 			"search_all_orgs": prop("boolean", "Search across all orgs"),
 		}, "hostname"),
 	}
@@ -280,7 +336,7 @@ ORDER BY LastSeen DESC LIMIT 1`,
 func toolListClients() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "list_clients",
-		Description: "List clients, optionally filtered by hostname/FQDN pattern or OS type.",
+		Description: toolDescription("list_clients"),
 		InputSchema: schema(map[string]any{
 			"search":    prop("string", "Regex filter on hostname, FQDN, or client_id"),
 			"os_filter": prop("string", "Regex filter on OS type (e.g. linux, windows)"),
@@ -339,7 +395,7 @@ ORDER BY LastSeen DESC LIMIT %d`,
 func toolListArtifacts() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "list_artifacts",
-		Description: "List available artifact definitions. Use name_regex to filter. Call before collect_artifact to find the correct artifact name.",
+		Description: toolDescription("list_artifacts"),
 		InputSchema: schema(map[string]any{
 			"name_regex": prop("string", "Regex to filter artifact names (default: all)"),
 			"org_id":     prop("string", "Org ID (optional)"),
@@ -381,7 +437,7 @@ WHERE name =~ %s`, raptor.VQLLiteral(nameRegex))
 func toolArtifactDetails() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "artifact_details",
-		Description: "Get full artifact metadata including parameters and source names. Call before get_collection_results for multi-source artifacts.",
+		Description: toolDescription("artifact_details"),
 		InputSchema: schema(map[string]any{
 			"artifact_name": prop("string", "Exact artifact name"),
 			"org_id":        prop("string", "Org ID (optional)"),
@@ -416,7 +472,7 @@ FROM artifact_definitions(names=[%s])`, raptor.VQLLiteral(name))
 func toolCollectArtifact() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "collect_artifact",
-		Description: "Start an async artifact collection on a client. Returns a flow_id. Follow up with get_collection_results to retrieve results.",
+		Description: toolDescription("collect_artifact"),
 		InputSchema: schema(map[string]any{
 			"client_id":  prop("string", "Target client ID"),
 			"artifact":   prop("string", "Artifact name to collect"),
@@ -474,7 +530,7 @@ FROM foreach(row=collection)`,
 func toolListCollections() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "list_collections",
-		Description: "List past and in-progress artifact collections (flows) for a client, ordered by most recent first.",
+		Description: toolDescription("list_collections"),
 		InputSchema: schema(map[string]any{
 			"client_id": prop("string", "Target client ID"),
 			"limit":     prop("integer", "Max results (default 20)"),
@@ -522,7 +578,7 @@ ORDER BY created DESC LIMIT %d`,
 func toolGetCollectionResults() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "get_collection_results",
-		Description: "Poll a flow for completion and retrieve results. Use artifact_details first to check for multiple sources. For multi-source artifacts pass the source name as 'artifact/source'.",
+		Description: toolDescription("get_collection_results"),
 		InputSchema: schema(map[string]any{
 			"client_id":   prop("string", "Target client ID"),
 			"flow_id":     prop("string", "Flow ID from collect_artifact"),
@@ -551,6 +607,12 @@ func handleGetCollectionResults(client *raptor.Client, cfg *raptor.Config) mcp.T
 		}
 		maxRetries := getInt(args, "max_retries", 20)
 		retryDelay := getInt(args, "retry_delay", 5)
+		if maxRetries <= 0 || maxRetries > 1000 {
+			return toolErrMsg("max_retries must be between 1 and 1000"), nil
+		}
+		if retryDelay < 0 || retryDelay > 300 {
+			return toolErrMsg("retry_delay must be between 0 and 300 seconds"), nil
+		}
 		orgID := client.OrgID(getStr(args, "org_id"))
 
 		// poll for completion
@@ -565,7 +627,18 @@ WHERE message =~ %s LIMIT 1`,
 		for i := 0; i < maxRetries; i++ {
 			if i > 0 {
 				slog.Debug("get_collection_results polling", "flow_id", flowID, "attempt", i+1, "max", maxRetries)
-				time.Sleep(time.Duration(retryDelay) * time.Second)
+				timer := time.NewTimer(time.Duration(retryDelay) * time.Second)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return toolErr(ctx.Err()), nil
+				case <-timer.C:
+				}
 			}
 			rows, err := client.RunVQL(ctx, pollVQL, orgID)
 			if err != nil {
@@ -606,7 +679,7 @@ WHERE message =~ %s LIMIT 1`,
 func toolRealtimeCollect() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "realtime_collect",
-		Description: "Blocking collection: starts a flow and waits for completion via watch_monitoring. Best for fast artifacts. Returns results directly.",
+		Description: toolDescription("realtime_collect"),
 		InputSchema: schema(map[string]any{
 			"client_id":  prop("string", "Target client ID"),
 			"artifact":   prop("string", "Artifact name to collect"),
@@ -677,7 +750,7 @@ SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 func toolRunVQL() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "run_vql",
-		Description: "Execute a raw VQL query with no sanitization. Only available when dangerous tools are enabled.",
+		Description: toolDescription("run_vql"),
 		InputSchema: schema(map[string]any{
 			"query":  prop("string", "Raw VQL query string"),
 			"org_id": prop("string", "Org ID (optional)"),
@@ -720,13 +793,13 @@ func handleRunVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 func toolExportVQL() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "export_vql",
-		Description: "Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits. Returns a summary with file path and row count. Only available when dangerous tools are enabled.",
+		Description: toolDescription("export_vql"),
 		InputSchema: schema(map[string]any{
 			"query":       prop("string", "VQL query to execute"),
-			"filepath":    prop("string", "Output file path on the MCP server host (e.g. /tmp/results.jsonl). Files are named with a timestamp suffix and sequence number if they roll over."),
+			"filepath":    prop("string", "Optional output file path on the MCP server host (e.g. /tmp/results.jsonl). Defaults to the RAPTOR_DATA_PATH directory. Files are named with a timestamp suffix and sequence number if they roll over."),
 			"max_file_mb": prop("integer", "Max file size in MB before rolling to a new file (default 100, max 1000)"),
 			"org_id":      prop("string", "Org ID (optional)"),
-		}, "query", "filepath"),
+		}, "query"),
 	}
 }
 
@@ -742,7 +815,7 @@ func handleExportVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler 
 		}
 		basePath := getStr(args, "filepath")
 		if basePath == "" {
-			return toolErrMsg("filepath is required"), nil
+			basePath = filepath.Join(cfg.DataDir, "export.jsonl")
 		}
 		maxFileMB := getInt(args, "max_file_mb", 100)
 		if maxFileMB <= 0 {

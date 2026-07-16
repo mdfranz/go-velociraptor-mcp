@@ -33,6 +33,20 @@ func ValidateFieldName(name string) error {
 	return nil
 }
 
+func ValidateFieldList(fields string) (string, error) {
+	if strings.TrimSpace(fields) == "" {
+		return "", fmt.Errorf("at least one field is required")
+	}
+	parts := strings.Split(fields, ",")
+	for i, part := range parts {
+		parts[i] = strings.TrimSpace(part)
+		if err := ValidateFieldName(parts[i]); err != nil {
+			return "", err
+		}
+	}
+	return strings.Join(parts, ", "), nil
+}
+
 func ValidateParamName(name string) error {
 	if !validParamName.MatchString(name) {
 		return fmt.Errorf("invalid parameter name: %q", name)

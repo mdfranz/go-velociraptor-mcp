@@ -1,0 +1,32 @@
+list_orgs: >-
+  List all Velociraptor organizations (tenants). Call this first if the org is unknown.
+
+client_info: >-
+  Find a client by hostname or FQDN. Call before collection tools when you only know the hostname.
+
+list_clients: >-
+  List clients, optionally filtered by hostname/FQDN pattern or OS type.
+
+list_artifacts: >-
+  List available artifact definitions. Use name_regex to filter. Call before collect_artifact to find the correct artifact name.
+
+artifact_details: >-
+  Get full artifact metadata including parameters and source names. Call before get_collection_results for multi-source artifacts.
+
+collect_artifact: >-
+  Start an async artifact collection on a client. Returns a flow_id. Follow up with get_collection_results to retrieve results.
+
+list_collections: >-
+  List past and in-progress artifact collections (flows) for a client, ordered by most recent first.
+
+get_collection_results: >-
+  Poll a flow for completion and retrieve results. Use artifact_details first to check for multiple sources. For multi-source artifacts pass the source name as 'artifact/source'.
+
+realtime_collect: >-
+  Blocking collection: starts a flow and waits for completion via watch_monitoring. Best for fast artifacts. Returns results directly.
+
+run_vql: >-
+  Execute a raw VQL query with no sanitization. Only available when dangerous tools are enabled.
+
+export_vql: >-
+  Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits. Returns a summary with file path and row count. Only available when dangerous tools are enabled.

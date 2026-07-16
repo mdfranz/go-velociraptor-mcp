@@ -15,8 +15,10 @@ var (
 	flagOutput    string
 	flagDangerous bool
 
-	client *raptor.Client
-	cfg    *raptor.Config
+	client        *raptor.Client
+	cfg           *raptor.Config
+	commandCtx    = context.Background()
+	commandCancel context.CancelFunc
 )
 
 var rootCmd = &cobra.Command{
@@ -37,6 +39,11 @@ var rootCmd = &cobra.Command{
 		if flagDangerous {
 			cfg.EnableDangerousTools = true
 		}
+		baseCtx := cmd.Context()
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		commandCtx, commandCancel = context.WithTimeout(baseCtx, cfg.DefaultTimeout)
 		client, err = raptor.NewClient(cfg)
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
@@ -57,9 +64,21 @@ func orgID() string {
 }
 
 func ctx() context.Context {
-	return context.Background()
+	return commandCtx
 }
 
 func printErr(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
+}
+
+func closeRuntime() {
+	if client != nil {
+		client.Close()
+		client = nil
+	}
+	if commandCancel != nil {
+		commandCancel()
+		commandCancel = nil
+	}
+	commandCtx = context.Background()
 }

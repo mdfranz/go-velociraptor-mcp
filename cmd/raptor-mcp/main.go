@@ -41,6 +41,16 @@ func run() int {
 		defer logCloser.Close()
 	}
 
+	lockCloser, err := raptor.AcquireProcessLock(cfg.LockFile)
+	if err != nil {
+		slog.Error("lock acquisition failed", "error", err, "lock_file", cfg.LockFile)
+		fmt.Fprintln(os.Stderr, "lock error:", err)
+		return 1
+	}
+	if lockCloser != nil {
+		defer lockCloser.Close()
+	}
+
 	slog.Info("server starting",
 		"version", version,
 		"api_connection_string", cfg.APIConnectionString,
@@ -52,6 +62,7 @@ func run() int {
 		"disabled_tools", cfg.DisabledTools,
 		"log_file", cfg.LogFile,
 		"lock_file", cfg.LockFile,
+		"data_dir", cfg.DataDir,
 	)
 
 	client, err := raptor.NewClient(cfg)
@@ -81,4 +92,3 @@ func run() int {
 	slog.Info("server stopped")
 	return 0
 }
-

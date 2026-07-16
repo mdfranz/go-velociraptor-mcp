@@ -11,15 +11,15 @@ import (
 )
 
 var (
-	flagCollectClientID string
-	flagCollectArtifact string
-	flagCollectParams   []string
-	flagCollectTimeout  int
-	flagFlowID          string
-	flagCollectRetries  int
-	flagCollectDelay    int
-	flagCollectFields   string
-	flagCollectSource   string
+	flagCollectClientID  string
+	flagCollectArtifact  string
+	flagCollectParams    []string
+	flagCollectTimeout   int
+	flagFlowID           string
+	flagCollectRetries   int
+	flagCollectDelay     int
+	flagCollectFields    string
+	flagCollectSource    string
 	flagCollectListLimit int
 )
 
@@ -134,18 +134,7 @@ var collectListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List past and in-progress flows for a client",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		vql := fmt.Sprintf(`
-SELECT session_id AS flow_id,
-       request.artifacts AS artifacts,
-       state,
-       timestamp(epoch=create_time) AS created,
-       total_collected_rows AS rows,
-       total_uploaded_files AS uploaded_files,
-       request.creator AS creator
-FROM flows(client_id=%s)
-ORDER BY created DESC LIMIT %d`,
-			raptor.VQLLiteral(flagCollectClientID), flagCollectListLimit)
-		rows, err := client.RunVQL(ctx(), vql, orgID())
+		rows, err := listFlows(flagCollectClientID, flagCollectListLimit)
 		if err != nil {
 			return err
 		}
@@ -190,6 +179,10 @@ FROM foreach(row=collection)`,
 }
 
 func buildRealtimeVQL(clientID, artifact, source, fields string, params map[string]any) (string, error) {
+	fields, err := raptor.ValidateFieldList(fields)
+	if err != nil {
+		return "", err
+	}
 	envPart := ""
 	if len(params) > 0 {
 		envDict, err := raptor.BuildEnvDict(params)
@@ -216,6 +209,12 @@ SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 }
 
 func pollFlowCompletion(clientID, flowID, artifact string, maxRetries, delaySeconds int) error {
+	if maxRetries <= 0 || maxRetries > 1000 {
+		return fmt.Errorf("retries must be between 1 and 1000")
+	}
+	if delaySeconds < 0 || delaySeconds > 300 {
+		return fmt.Errorf("delay must be between 0 and 300 seconds")
+	}
 	donePattern := fmt.Sprintf("^Collection %s", artifact)
 	vql := fmt.Sprintf(`
 SELECT message FROM flow_logs(client_id=%s, flow_id=%s)
@@ -228,7 +227,18 @@ LIMIT 1`,
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
 			fmt.Fprintf(os.Stderr, "waiting for flow %s (%d/%d)...\n", flowID, i, maxRetries)
-			time.Sleep(time.Duration(delaySeconds) * time.Second)
+			timer := time.NewTimer(time.Duration(delaySeconds) * time.Second)
+			select {
+			case <-ctx().Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return ctx().Err()
+			case <-timer.C:
+			}
 		}
 		rows, err := client.RunVQL(ctx(), vql, orgID())
 		if err != nil {
@@ -242,6 +252,10 @@ LIMIT 1`,
 }
 
 func fetchFlowResults(clientID, flowID, artifact, source, fields string) ([]map[string]any, error) {
+	fields, err := raptor.ValidateFieldList(fields)
+	if err != nil {
+		return nil, err
+	}
 	sourceName := artifact
 	if source != "" {
 		sourceName = artifact + "/" + source

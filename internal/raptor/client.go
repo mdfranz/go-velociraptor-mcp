@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"io"
 
-	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
-	vql_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	vql_proto "www.velocidex.com/golang/velociraptor/actions/proto"
+	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 )
 
 type Client struct {
@@ -71,10 +71,36 @@ func (c *Client) OrgID(override string) string {
 	return c.cfg.OrgID
 }
 
+func (c *Client) Health(ctx context.Context) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.cfg != nil && c.cfg.DefaultTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.DefaultTimeout)
+		defer cancel()
+	}
+
+	response, err := c.stub.Check(ctx, &api_proto.HealthCheckRequest{})
+	if err != nil {
+		return "", err
+	}
+	return response.Status.String(), nil
+}
+
 // StreamVQL executes a VQL query and calls fn for each decoded batch of rows
 // as they arrive from the gRPC stream. This avoids buffering the entire result
 // set in memory and is used by the export tool to write directly to disk.
 func (c *Client) StreamVQL(ctx context.Context, vql string, orgID string, fn func([]map[string]any) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.cfg != nil && c.cfg.DefaultTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.DefaultTimeout)
+		defer cancel()
+	}
+
 	args := &vql_proto.VQLCollectorArgs{
 		Query: []*vql_proto.VQLRequest{{VQL: vql}},
 	}
@@ -109,34 +135,12 @@ func (c *Client) StreamVQL(ctx context.Context, vql string, orgID string, fn fun
 }
 
 func (c *Client) RunVQL(ctx context.Context, vql string, orgID string) ([]map[string]any, error) {
-	args := &vql_proto.VQLCollectorArgs{
-		Query: []*vql_proto.VQLRequest{{VQL: vql}},
-	}
-	if orgID != "" {
-		args.OrgId = orgID
-	}
-
-	stream, err := c.stub.Query(ctx, args)
-	if err != nil {
-		return nil, err
-	}
-
 	var rows []map[string]any
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		chunk, err := decodeResponse(resp)
-		if err != nil {
-			return nil, err
-		}
+	err := c.StreamVQL(ctx, vql, orgID, func(chunk []map[string]any) error {
 		rows = append(rows, chunk...)
-	}
-	return rows, nil
+		return nil
+	})
+	return rows, err
 }
 
 func decodeResponse(resp *vql_proto.VQLResponse) ([]map[string]any, error) {

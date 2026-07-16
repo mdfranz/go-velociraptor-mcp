@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 var version = "dev"
@@ -12,7 +15,10 @@ func main() {
 }
 
 func run() int {
-	if err := rootCmd.Execute(); err != nil {
+	defer closeRuntime()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

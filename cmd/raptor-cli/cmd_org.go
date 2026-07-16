@@ -18,7 +18,7 @@ var orgListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List organizations",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		rows, err := client.RunVQL(ctx(), `SELECT OrgId, Name, Nonce FROM orgs()`, "")
+		rows, err := client.RunVQL(ctx(), `SELECT OrgId, Name FROM orgs()`, "")
 		if err != nil {
 			return err
 		}

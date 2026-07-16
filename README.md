@@ -34,7 +34,7 @@ Both binaries are powered by a shared backend package (`internal/raptor`) that m
 
 ## Installation & Building
 
-Ensure you have a recent version of Go installed (Go 1.26+ is recommended).
+Ensure you have the required version of Go installed (Go 1.26.3+, per `go.mod`).
 
 ### Build Binaries
 
@@ -71,16 +71,73 @@ go build -o raptor-mcp ./cmd/raptor-mcp
   ./raptor-cli org list
   ```
 
+#### Hunts
+* **List Hunts**:
+  List recent fleet hunts.
+  ```bash
+  ./raptor-cli hunt list --limit 20
+  ```
+* **Describe Hunt**:
+  Show hunt metadata and statistics.
+  ```bash
+  ./raptor-cli hunt describe --hunt "H.12345"
+  ```
+* **List Hunt Flows**:
+  List the client flows launched by a hunt.
+  ```bash
+  ./raptor-cli hunt flows --hunt "H.12345" --limit 50
+  ```
+* **Read Hunt Results**:
+  Read results for one artifact collected by a hunt.
+  ```bash
+  ./raptor-cli hunt results --hunt "H.12345" --artifact "Linux.Sys.Pslist" --limit 100
+  ```
+
+#### Flows
+* **List Flows**:
+  List recent and in-progress flows for a client.
+  ```bash
+  ./raptor-cli flow list --client "C.12345" --limit 20
+  ```
+* **Describe Flow**:
+  Show metadata for one flow.
+  ```bash
+  ./raptor-cli flow describe --client "C.12345" --flow "F.67890"
+  ```
+* **Read Flow Logs**:
+  Read diagnostic logs for a flow, optionally filtered by message regex.
+  ```bash
+  ./raptor-cli flow logs --client "C.12345" --flow "F.67890" --match "error"
+  ```
+
 #### Client Discovery
 * **List Clients**:
   List and filter active endpoints.
   ```bash
   ./raptor-cli client list --search "win-10" --os "windows" --limit 10
   ```
+  Use `--online` to restrict results to clients seen within the last 15 minutes, or `--label` to use the server label index.
 * **Client Info**:
   Lookup a specific client's system profile by hostname/FQDN.
   ```bash
   ./raptor-cli client info "win-10"
+  ```
+* **Describe Client**:
+  Show the complete client record by client ID.
+  ```bash
+  ./raptor-cli client describe --client "C.12345"
+  ```
+* **Client Metadata**:
+  Read free-form metadata stored for a client.
+  ```bash
+  ./raptor-cli client metadata --client "C.12345"
+  ```
+
+#### Server
+* **Health**:
+  Check the Velociraptor API server health status.
+  ```bash
+  ./raptor-cli server health
   ```
 
 #### Artifact Definitions
@@ -147,7 +204,19 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 | `RAPTOR_TIMEOUT_SECONDS` | No | `300` | Tool timeout duration in seconds |
 | `RAPTOR_LOG_FILE` | No | `raptor-mcp.log`| Output logfile path. Use `"off"` to disable logging to disk |
 | `RAPTOR_LOCK_FILE` | No | `raptor-mcp.lock`| Exclusivity lockfile path. Use `"off"` to disable |
+| `RAPTOR_DATA_PATH` | No | `data` | Default directory for `export_vql` output, relative to the MCP server's working directory |
 | `LOG_LEVEL` | No | `debug` | Structured log verbosity: `debug`, `info`, `warn`, `error` |
+
+### Operational Defaults
+
+If unset, runtime defaults are applied:
+
+| Setting | Default |
+|---|---|
+| API request timeout | 300 seconds |
+| Max MCP response payload | 512000 bytes |
+| Pinned server name | `VelociraptorServer` |
+| Log level | `debug` |
 
 ### Registering with Claude Desktop
 
@@ -182,7 +251,25 @@ Add the server to your Claude Desktop configuration (typically `~/Library/Applic
 8. **`get_collection_results`**: Poll, wait, and retrieve results for a completed artifact collection flow.
 9. **`realtime_collect`**: Dispatch an artifact collection flow, block until complete, and yield structured results.
 10. **`run_vql`**: Run raw VQL query directly (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
-11. **`export_vql`**: Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+11. **`export_vql`**: Execute a VQL query and stream all results to a JSONL file on the server. If `filepath` is omitted, output defaults to `RAPTOR_DATA_PATH/export.jsonl`. Handles arbitrarily large result sets without hitting response size limits (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+
+### Customization
+
+Top-level MCP tool descriptions are maintained in [`cmd/raptor-mcp/tools.yaml`](cmd/raptor-mcp/tools.yaml), keyed by tool name:
+
+```yaml
+get_collection_results: >-
+  Poll a flow for completion and retrieve results.
+  Use artifact_details first to check for multiple sources.
+```
+
+The file is embedded into the server binary at build time. It is not read dynamically at runtime, so rebuild and restart `raptor-mcp` after making changes:
+
+```bash
+make
+```
+
+Input schemas and parameter-level descriptions remain in `cmd/raptor-mcp/tools.go`.
 
 
 ### Robust Rotating Logger
