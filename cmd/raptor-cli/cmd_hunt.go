@@ -79,7 +79,14 @@ ORDER BY created DESC LIMIT %d`, flagHuntListLimit)
 		if err != nil {
 			return err
 		}
-		printRows(rows)
+		printRowsWithColumns(rows, []string{
+			"hunt_id",
+			"created",
+			"creator",
+			"hunt_description",
+			"state",
+			"clients_scheduled",
+		})
 		return nil
 	},
 }

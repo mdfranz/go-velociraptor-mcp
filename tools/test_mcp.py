@@ -43,11 +43,11 @@ You are a DFIR analyst using the raptor-mcp Velociraptor MCP server.
 
 Available tools follow a strict call order:
 - Use list_orgs first if the org is unknown.
-- Use client_info or list_clients to resolve a hostname to a client_id.
+- Use clients with a search filter to resolve a hostname to a client_id.
 - Use list_artifacts or artifact_details to confirm artifact names and parameters.
 - Use collect_artifact to start async collections, then get_collection_results to retrieve them.
 - Use realtime_collect for fast blocking collections.
-- run_vql executes raw VQL directly against the Velociraptor server. It is available in this session.
+- run_vql executes one read-only SELECT query against the Velociraptor server.
 
 Always provide a detailed final answer including:
 1. What you found
@@ -168,8 +168,6 @@ async def run(model_name: str) -> None:
     logger.info(f"Server: {server_path}")
 
     server_env = dict(os.environ)
-    server_env["ENABLE_DANGEROUS_TOOLS"] = "true"
-
     transport = StdioTransport(
         command=server_path,
         args=[],

@@ -61,7 +61,6 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 | `--config <path>` | Path to your `api_client.yaml`. Autodetects at `./api_client.yaml`, inside `$XDG_CONFIG_HOME`, or `~/.config/velociraptor/`. | `VELOCIRAPTOR_API_CONFIG` |
 | `--org <id>` | The default organization ID to scope queries to (e.g., `root` or tenant ID). | `VELOCIRAPTOR_ORG_ID` |
 | `-o`, `--output <format>` | Output format: `table`, `json`, `yaml`. (Default: `table`) | None |
-| `--dangerous` | Enables dangerous features such as raw VQL query execution. | `ENABLE_DANGEROUS_TOOLS=true` |
 
 ### CLI Subcommands
 
@@ -174,16 +173,16 @@ go build -o raptor-mcp ./cmd/raptor-mcp
   ./raptor-cli collect realtime --client "C.12345" --artifact "Generic.Client.Info"
   ```
 
-#### Raw VQL Execution (Dangerous)
+#### Read-only VQL
 * **Run Query**:
-  Execute custom VQL queries directly against the Velociraptor API.
+  Execute one SELECT query directly against the Velociraptor API.
   ```bash
-  ./raptor-cli --dangerous vql run "SELECT * FROM info()"
+  ./raptor-cli vql run "SELECT * FROM info()"
   ```
 * **Export to JSONL**:
-  Stream VQL results to a timestamped JSONL file on disk. Rolls to a new file when the size limit is reached. Progress and file paths are printed to stderr.
+  Stream SELECT results to a timestamped JSONL file on disk. Rolls to a new file when the size limit is reached. Progress and file paths are printed to stderr.
   ```bash
-  ./raptor-cli --dangerous vql export "SELECT * FROM clients()" --out /tmp/clients.jsonl --max-mb 50
+  ./raptor-cli vql export "SELECT * FROM clients()" --out /tmp/clients.jsonl --max-mb 50
   ```
 
 ---
@@ -198,7 +197,6 @@ go build -o raptor-mcp ./cmd/raptor-mcp
 |---|---|---|---|
 | `VELOCIRAPTOR_API_CONFIG` | No | discovery chain | Explicit yaml file path to `api_client.yaml` |
 | `VELOCIRAPTOR_ORG_ID` | No | empty | Default organization ID scope |
-| `ENABLE_DANGEROUS_TOOLS` | No | `false` | Must be set to `true` to register raw VQL execution tools (`run_vql`) |
 | `VELOCIRAPTOR_DISABLED_TOOLS`| No | empty | Comma-separated list of tool names to hide from the client |
 | `RAPTOR_MAX_RESPONSE_BYTES` | No | `512000` | Truncation limit for tool response size in bytes |
 | `RAPTOR_TIMEOUT_SECONDS` | No | `300` | Tool timeout duration in seconds |
@@ -231,7 +229,6 @@ Add the server to your Claude Desktop configuration (typically `~/Library/Applic
       "env": {
         "VELOCIRAPTOR_API_CONFIG": "/path/to/api_client.yaml",
         "VELOCIRAPTOR_ORG_ID": "root",
-        "ENABLE_DANGEROUS_TOOLS": "true",
         "LOG_LEVEL": "debug"
       }
     }
@@ -242,25 +239,27 @@ Add the server to your Claude Desktop configuration (typically `~/Library/Applic
 ### Exposed MCP Tools
 
 1. **`list_orgs`**: List all Velociraptor organizations (tenants).
-2. **`client_info`**: Identify client ID and specs using a hostname or FQDN regex.
-3. **`list_clients`**: Filter, list, and profile registered endpoints.
-4. **`list_artifacts`**: Query and filter forensic artifact signatures.
-5. **`artifact_details`**: Retrieve schemas, parameters, and sources for a forensic artifact.
-6. **`collect_artifact`**: Trigger an asynchronous endpoint collection flow.
-7. **`list_collections`**: List past and in-progress artifact collections (flows) for a client, ordered by most recent first.
-8. **`get_collection_results`**: Poll, wait, and retrieve results for a completed artifact collection flow.
-9. **`realtime_collect`**: Dispatch an artifact collection flow, block until complete, and yield structured results.
-10. **`run_vql`**: Run raw VQL query directly (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
-11. **`export_vql`**: Execute a VQL query and stream all results to a JSONL file on the server. If `filepath` is omitted, output defaults to `RAPTOR_DATA_PATH/export.jsonl`. Handles arbitrarily large result sets without hitting response size limits (only registered when `ENABLE_DANGEROUS_TOOLS="true"`).
+2. **`clients`**: Find, list, or inspect clients. Use `client_id` for exact details, or search and filters for discovery.
+3. **`list_artifacts`**: Query and filter forensic artifact signatures.
+4. **`artifact_details`**: Retrieve schemas, parameters, and sources for a forensic artifact.
+5. **`collect_artifact`**: Trigger an asynchronous endpoint collection flow.
+6. **`inspect_collections`**: List a client's collections or inspect one flow's metadata with `flow_id`.
+7. **`get_collection_results`**: Poll, wait, and retrieve selected fields for a completed collection flow.
+8. **`realtime_collect`**: Dispatch a collection flow, block until complete, and yield selected fields directly.
+9. **`server_health`**: Check the Velociraptor API server health status.
+10. **`hunts`**: List recent fleet hunts or inspect one hunt's metadata with `hunt_id`.
+11. **`list_hunt_flows`**: List flows launched by a fleet hunt.
+12. **`get_hunt_results`**: Retrieve selected fields from one artifact in a fleet hunt.
+13. **`run_vql`**: Execute one read-only SELECT VQL query.
+14. **`export_vql`**: Execute one read-only SELECT VQL query and stream results to a JSONL file.
 
 ### Customization
 
 Top-level MCP tool descriptions are maintained in [`cmd/raptor-mcp/tools.yaml`](cmd/raptor-mcp/tools.yaml), keyed by tool name:
 
 ```yaml
-get_collection_results: >-
-  Poll a flow for completion and retrieve results.
-  Use artifact_details first to check for multiple sources.
+inspect_collections: >-
+  List collections, or inspect one flow when flow_id is provided.
 ```
 
 The file is embedded into the server binary at build time. It is not read dynamically at runtime, so rebuild and restart `raptor-mcp` after making changes:

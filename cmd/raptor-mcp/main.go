@@ -58,7 +58,6 @@ func run() int {
 		"org_id", cfg.OrgID,
 		"max_response_bytes", cfg.MaxResponseBytes,
 		"timeout", cfg.DefaultTimeout.String(),
-		"dangerous_tools", cfg.EnableDangerousTools,
 		"disabled_tools", cfg.DisabledTools,
 		"log_file", cfg.LogFile,
 		"lock_file", cfg.LockFile,

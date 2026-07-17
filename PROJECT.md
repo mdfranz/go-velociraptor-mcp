@@ -23,13 +23,13 @@ The project opened with two design documents rather than any Go source. `MCP-SER
 
 **Theme:** Working CLI and live test suite before the MCP server
 
-1,100+ lines of Go landed in a single commit: the entire shared library and CLI binary. `internal/raptor/` delivered mTLS config loading with environment override support, a gRPC client with `RunVQL()` and compressed (zlib/JSONL) response decoding, VQL injection safety via `VQLLiteral()` and strict artifact/parameter name validation, and response shaping helpers. `cmd/raptor-cli/` wrapped it in a Cobra CLI with global flags (`--config`, `--org`, `--output`, `--dangerous`), commands for org listing, client discovery, artifact browsing, and three collection modes: async flow dispatch, async result polling, and blocking realtime collect via `watch_monitoring`. Table and JSON output were included from the start; YAML was declared but not yet wired.
+1,100+ lines of Go landed in a single commit: the entire shared library and CLI binary. `internal/raptor/` delivered mTLS config loading with environment override support, a gRPC client with `RunVQL()` and compressed (zlib/JSONL) response decoding, VQL injection safety via `VQLLiteral()` and strict artifact/parameter name validation, and response shaping helpers. `cmd/raptor-cli/` wrapped it in a Cobra CLI with global flags (`--config`, `--org`, `--output`), commands for org listing, client discovery, artifact browsing, and three collection modes: async flow dispatch, async result polling, and blocking realtime collect via `watch_monitoring`. Table and JSON output were included from the start; YAML was declared but not yet wired.
 
-`vql run` followed one commit later, deliberately separated and gated behind `--dangerous` to make raw VQL an explicit opt-in. Alongside it came `tools/test_vql.sh` — written before the MCP server existed — establishing a live-system test harness with 31 tests covering org listing, client discovery, artifact listing, VQL gate enforcement, server-side queries, client-side `source()` results, and netstat analysis.
+`vql run` followed one commit later as a separate read-only query path. Alongside it came `tools/test_vql.sh` — written before the MCP server existed — establishing a live-system test harness with 31 tests covering org listing, client discovery, artifact listing, SELECT validation, server-side queries, client-side `source()` results, and netstat analysis.
 
 ### Technical Decisions
 - **Live-system tests, not mocks**: The test suite pins real client IDs and flow IDs from the actual Velociraptor deployment. This catches real API behavior that mocks would miss, at the cost of requiring a live instance to run.
-- **`--dangerous` gate from day one**: Raw VQL is powerful enough to exfiltrate or modify data on endpoints. Requiring an explicit flag prevents accidental exposure when the binary is handed to less experienced operators.
+- **Read-only VQL validation**: Ad hoc VQL is available by default but must be a single SELECT statement before dispatch.
 - **`VQLLiteral()` in shared library**: Centralizing VQL escaping in `internal/raptor/sanitize.go` rather than in each command ensures consistent injection protection. Any new command that forgets to use it is immediately visible in review.
 
 ---
@@ -60,7 +60,7 @@ The new `export_vql` tool addressed result sets too large for any in-memory resp
 ### Technical Decisions
 - **Row-level truncation over byte-level**: Byte truncation was simpler to implement but produced unusable output. Row-level truncation preserves valid JSON at the cost of slightly more measurement work — the right trade-off for a tool feeding an LLM.
 - **Streaming callback over buffering**: `StreamVQL()` processes gRPC response batches as they arrive, keeping memory flat regardless of result set size. This is essential for large artifact collections like full package lists or extensive bash histories.
-- **`export_vql` as dangerous-only**: The tool writes arbitrary files to the MCP server host, so it was placed behind the same `ENABLE_DANGEROUS_TOOLS` gate as raw VQL.
+- **`export_vql` for large read results**: The tool streams validated SELECT results to rolling JSONL files without loading the full result set into memory.
 
 ---
 
@@ -70,7 +70,7 @@ The new `export_vql` tool addressed result sets too large for any in-memory resp
 
 A focused parity pass closed the gap between the two binaries. `collect list` mirrors `list_collections`, listing past and in-progress flows for a client ordered most-recent first. `vql export` mirrors `export_vql`, reusing the same `StreamVQL()` callback, file rolling logic, and timestamp naming convention, with progress printed to stderr. YAML output had been declared as a valid `--output` value since Phase 2 but silently fell through to table — fixed with a `yaml.Marshal` branch in `output.go`.
 
-A latent injection bug was also fixed: `cmd_client.go`'s `quote()` helper had used raw single-quote wrapping rather than `raptor.VQLLiteral()`. A hostname containing a single quote would have produced broken VQL with no error. The fix makes `quote()` a thin wrapper around the shared sanitizer, restoring consistency across all commands. Ten new tests in `test_vql.sh` covered all of the above, including a JSONL validity check using `python3` and the `--dangerous` gate for `vql export`. The suite reached 35 tests.
+A latent injection bug was also fixed: `cmd_client.go`'s `quote()` helper had used raw single-quote wrapping rather than `raptor.VQLLiteral()`. A hostname containing a single quote would have produced broken VQL with no error. The fix makes `quote()` a thin wrapper around the shared sanitizer, restoring consistency across all commands. Ten new tests in `test_vql.sh` covered all of the above, including a JSONL validity check using `python3` and SELECT validation for `vql export`. The suite reached 35 tests.
 
 ### Technical Decisions
 - **Parity as an explicit goal**: Keeping CLI and MCP at the same feature level prevents the MCP server from becoming the "real" interface while the CLI stagnates. Both are supported paths for different operators.

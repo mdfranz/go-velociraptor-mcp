@@ -12,6 +12,10 @@ import (
 )
 
 func printRows(rows []map[string]any) {
+	printRowsWithColumns(rows, nil)
+}
+
+func printRowsWithColumns(rows []map[string]any, columns []string) {
 	if len(rows) == 0 {
 		fmt.Println("(no results)")
 		return
@@ -24,12 +28,23 @@ func printRows(rows []map[string]any) {
 		b, _ := yaml.Marshal(rows)
 		fmt.Print(string(b))
 	default:
-		printTable(rows)
+		if len(columns) == 0 {
+			printTable(rows)
+			return
+		}
+		printTableWithColumns(rows, columns)
 	}
 }
 
 func printTable(rows []map[string]any) {
-	keys := columnOrder(rows[0])
+	printTableKeys(rows, columnOrder(rows[0]))
+}
+
+func printTableWithColumns(rows []map[string]any, columns []string) {
+	printTableKeys(rows, columns)
+}
+
+func printTableKeys(rows []map[string]any, keys []string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, strings.Join(keys, "\t"))
 	fmt.Fprintln(w, strings.Join(dashes(keys), "\t"))
@@ -44,12 +59,22 @@ func printTable(rows []map[string]any) {
 }
 
 func columnOrder(row map[string]any) []string {
-	keys := make([]string, 0, len(row))
+	ids := make([]string, 0, len(row))
+	others := make([]string, 0, len(row))
 	for k := range row {
-		keys = append(keys, k)
+		if isIDColumn(k) {
+			ids = append(ids, k)
+		} else {
+			others = append(others, k)
+		}
 	}
-	sort.Strings(keys)
-	return keys
+	sort.Strings(ids)
+	sort.Strings(others)
+	return append(ids, others...)
+}
+
+func isIDColumn(key string) bool {
+	return key == "id" || strings.HasSuffix(key, "_id")
 }
 
 func dashes(keys []string) []string {

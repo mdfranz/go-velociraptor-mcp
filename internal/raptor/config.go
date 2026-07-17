@@ -19,15 +19,14 @@ type Config struct {
 	PinnedServerName    string `yaml:"pinned_server_name"`
 	MaxGRPCRecvSize     int    `yaml:"max_grpc_recv_size"`
 
-	OrgID                string
-	EnableDangerousTools bool
-	DisabledTools        []string
-	LogLevel             string
-	LogFile              string
-	LockFile             string
-	DataDir              string
-	MaxResponseBytes     int
-	DefaultTimeout       time.Duration
+	OrgID            string
+	DisabledTools    []string
+	LogLevel         string
+	LogFile          string
+	LockFile         string
+	DataDir          string
+	MaxResponseBytes int
+	DefaultTimeout   time.Duration
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -82,9 +81,6 @@ func resolveConfigPath(explicit string) (string, error) {
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VELOCIRAPTOR_ORG_ID"); v != "" {
 		cfg.OrgID = v
-	}
-	if v := os.Getenv("ENABLE_DANGEROUS_TOOLS"); v == "true" {
-		cfg.EnableDangerousTools = true
 	}
 	if v := os.Getenv("VELOCIRAPTOR_DISABLED_TOOLS"); v != "" {
 		for _, t := range strings.Split(v, ",") {

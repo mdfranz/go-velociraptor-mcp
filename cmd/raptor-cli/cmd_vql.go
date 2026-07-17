@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mdfranz/go-velociraptor-mcp/internal/raptor"
 	"github.com/spf13/cobra"
 )
 
 var (
-	flagVQLExportFile    string
-	flagVQLExportMaxMB   int
+	flagVQLExportFile  string
+	flagVQLExportMaxMB int
 )
 
 func init() {
@@ -28,16 +29,16 @@ func init() {
 
 var vqlCmd = &cobra.Command{
 	Use:   "vql",
-	Short: "Raw VQL execution (requires --dangerous)",
+	Short: "Read-only VQL operations",
 }
 
 var vqlRunCmd = &cobra.Command{
 	Use:   "run <query>",
-	Short: "Execute a raw VQL query",
+	Short: "Execute a read-only SELECT query",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !cfg.EnableDangerousTools {
-			return fmt.Errorf("vql run requires --dangerous flag")
+		if err := raptor.ValidateReadOnlyVQL(args[0]); err != nil {
+			return err
 		}
 		rows, err := client.RunVQL(ctx(), args[0], orgID())
 		if err != nil {
@@ -50,11 +51,11 @@ var vqlRunCmd = &cobra.Command{
 
 var vqlExportCmd = &cobra.Command{
 	Use:   "export <query>",
-	Short: "Stream VQL results to a JSONL file (requires --dangerous)",
+	Short: "Stream a read-only SELECT query to a JSONL file",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !cfg.EnableDangerousTools {
-			return fmt.Errorf("vql export requires --dangerous flag")
+		if err := raptor.ValidateReadOnlyVQL(args[0]); err != nil {
+			return err
 		}
 		query := args[0]
 		basePath := flagVQLExportFile

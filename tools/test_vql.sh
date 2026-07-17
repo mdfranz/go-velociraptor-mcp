@@ -102,52 +102,52 @@ run_contains "artifact details" "processRegex" \
     artifact details Linux.Sys.Pslist
 
 echo
-echo "=== VQL: gate check ==="
+echo "=== VQL: read-only validation ==="
 
-run_fails "vql run blocked without --dangerous" \
-    vql run "SELECT 1 FROM scope()"
+run_fails "vql run rejects non-SELECT" \
+    vql run "LET x <= collect_client(client_id='${CLIENT_A}', artifacts='Generic.Client.Info')"
 
 echo
 echo "=== VQL: server-side queries ==="
 
 run_contains "clients() query" "gitea-lin-pdx" \
-    --dangerous vql run "SELECT client_id, os_info.hostname AS Hostname FROM clients()"
+    vql run "SELECT client_id, os_info.hostname AS Hostname FROM clients()"
 
 run_contains "orgs() query" "root" \
-    --dangerous vql run "SELECT OrgId, Name FROM orgs()"
+    vql run "SELECT OrgId, Name FROM orgs()"
 
 run_contains "artifact_definitions filter" "Linux.Sys.Pslist" \
-    --dangerous vql run "SELECT name FROM artifact_definitions() WHERE name = 'Linux.Sys.Pslist'"
+    vql run "SELECT name FROM artifact_definitions() WHERE name = 'Linux.Sys.Pslist'"
 
 run_contains "server version via config.version" "0.77" \
-    --dangerous vql run "SELECT config.version.version AS version FROM scope()"
+    vql run "SELECT config.version.version AS version FROM scope()"
 
 run_contains "flows() on client A" "F.D9" \
-    --dangerous vql run "SELECT session_id FROM flows(client_id='${CLIENT_A}') LIMIT 3"
+    vql run "SELECT session_id FROM flows(client_id='${CLIENT_A}') LIMIT 3"
 
 echo
 echo "=== VQL: client-side queries via source() ==="
 
 run_contains "pslist results on client A" "systemd" \
-    --dangerous vql run "SELECT Name, Pid FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_PSLIST_A}', artifact='Linux.Sys.Pslist') LIMIT 10"
+    vql run "SELECT Name, Pid FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_PSLIST_A}', artifact='Linux.Sys.Pslist') LIMIT 10"
 
 run_contains "client info BasicInformation on client A" "gitea-lin-pdx" \
-    --dangerous vql run "SELECT Hostname FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_CLIENTINFO_A}', artifact='Generic.Client.Info/BasicInformation')"
+    vql run "SELECT Hostname FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_CLIENTINFO_A}', artifact='Generic.Client.Info/BasicInformation')"
 
 run_contains "filter pslist results" "sshd" \
-    --dangerous vql run "SELECT Name, Pid FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_PSLIST_A}', artifact='Linux.Sys.Pslist') WHERE Name =~ 'sshd'"
+    vql run "SELECT Name, Pid FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_PSLIST_A}', artifact='Linux.Sys.Pslist') WHERE Name =~ 'sshd'"
 
 echo
 echo "=== VQL: Linux.Network.Netstat ==="
 
 run_contains "TCP4 listening ports" "sshd" \
-    --dangerous vql run "SELECT LocalAddr, LocalPort, State, ProcessInfo.Command AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP4') WHERE State = 'Listening'"
+    vql run "SELECT LocalAddr, LocalPort, State, ProcessInfo.Command AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP4') WHERE State = 'Listening'"
 
 run_contains "TCP4 port 22 listening" "22" \
-    --dangerous vql run "SELECT LocalPort, ProcessInfo.Command AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP4') WHERE LocalPort = 22"
+    vql run "SELECT LocalPort, ProcessInfo.Command AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP4') WHERE LocalPort = 22"
 
 run_contains "TCP6 source has results" "LocalPort" \
-    --dangerous vql run "SELECT LocalAddr, LocalPort, State FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP6') LIMIT 3"
+    vql run "SELECT LocalAddr, LocalPort, State FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_A}', artifact='Linux.Network.Netstat/TCP6') LIMIT 3"
 
 run_contains "collect run returns flow_id" "F." \
     collect run --client "${CLIENT_A}" --artifact Linux.Network.Netstat
@@ -156,16 +156,16 @@ echo
 echo "=== VQL: Linux.Network.NetstatEnriched ==="
 
 run_contains "enriched has CallChain" "CallChain" \
-    --dangerous vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process, CallChain FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') LIMIT 3" -o json
+    vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process, CallChain FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') LIMIT 3" -o json
 
 run_contains "enriched filter by process docker-proxy" "docker-proxy" \
-    --dangerous vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE ProcInfo.Name =~ 'docker-proxy'"
+    vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE ProcInfo.Name =~ 'docker-proxy'"
 
 run_contains "enriched filter by port 22" "22" \
-    --dangerous vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE Lport = 22"
+    vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE Lport = 22"
 
 run_contains "enriched filter LISTEN status" "LISTEN" \
-    --dangerous vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE Status = 'LISTEN' LIMIT 5"
+    vql run "SELECT Laddr, Lport, Status, ProcInfo.Name AS Process FROM source(client_id='${CLIENT_A}', flow_id='${FLOW_NETSTAT_ENR_A}', artifact='Linux.Network.NetstatEnriched') WHERE Status = 'LISTEN' LIMIT 5"
 
 run_contains "collect run NetstatEnriched returns flow_id" "F." \
     collect run --client "${CLIENT_A}" --artifact Linux.Network.NetstatEnriched
@@ -219,13 +219,13 @@ echo
 echo "=== VQL: output formats ==="
 
 run_contains "json output" '"OrgId"' \
-    --dangerous vql run "SELECT OrgId FROM orgs()" -o json
+    vql run "SELECT OrgId FROM orgs()" -o json
 
 run_contains "yaml output" 'OrgId' \
-    --dangerous vql run "SELECT OrgId FROM orgs()" -o yaml
+    vql run "SELECT OrgId FROM orgs()" -o yaml
 
 run_contains "table output (default)" "OrgId" \
-    --dangerous vql run "SELECT OrgId FROM orgs()"
+    vql run "SELECT OrgId FROM orgs()"
 
 echo
 echo "=== vql export ==="
@@ -233,7 +233,7 @@ echo "=== vql export ==="
 EXPORT_TMP=$(mktemp -d)
 
 run_contains "vql export writes JSONL file" "done:" \
-    --dangerous vql export "SELECT OrgId, Name FROM orgs()" --out "${EXPORT_TMP}/orgs.jsonl"
+    vql export "SELECT OrgId, Name FROM orgs()" --out "${EXPORT_TMP}/orgs.jsonl"
 
 # verify the file was actually written and contains valid JSON
 echo -n "  export file exists and is valid JSONL ... "
@@ -246,8 +246,8 @@ else
     FAIL=$((FAIL+1))
 fi
 
-run_fails "vql export blocked without --dangerous" \
-    vql export "SELECT 1 FROM scope()" --out "${EXPORT_TMP}/nope.jsonl"
+run_fails "vql export rejects non-SELECT" \
+    vql export "LET x <= collect_client(client_id='${CLIENT_A}', artifacts='Generic.Client.Info')" --out "${EXPORT_TMP}/nope.jsonl"
 
 rm -rf "${EXPORT_TMP}"
 

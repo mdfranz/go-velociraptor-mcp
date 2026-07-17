@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,14 +27,17 @@ var toolDescriptions = loadToolDescriptions()
 
 var expectedToolDescriptions = map[string]struct{}{
 	"list_orgs":              {},
-	"client_info":            {},
-	"list_clients":           {},
+	"clients":                {},
 	"list_artifacts":         {},
 	"artifact_details":       {},
 	"collect_artifact":       {},
-	"list_collections":       {},
+	"inspect_collections":    {},
 	"get_collection_results": {},
 	"realtime_collect":       {},
+	"server_health":          {},
+	"hunts":                  {},
+	"list_hunt_flows":        {},
+	"get_hunt_results":       {},
 	"run_vql":                {},
 	"export_vql":             {},
 }
@@ -149,19 +153,20 @@ func registerTools(srv *mcp.Server, client *raptor.Client, cfg *raptor.Config) {
 	}
 
 	add(toolListOrgs(), handleListOrgs(client, cfg))
-	add(toolClientInfo(), handleClientInfo(client, cfg))
-	add(toolListClients(), handleListClients(client, cfg))
+	add(toolClients(), handleClients(client, cfg))
 	add(toolListArtifacts(), handleListArtifacts(client, cfg))
 	add(toolArtifactDetails(), handleArtifactDetails(client, cfg))
 	add(toolCollectArtifact(), handleCollectArtifact(client, cfg))
-	add(toolListCollections(), handleListCollections(client, cfg))
+	add(toolInspectCollections(), handleInspectCollections(client, cfg))
 	add(toolGetCollectionResults(), handleGetCollectionResults(client, cfg))
 	add(toolRealtimeCollect(), handleRealtimeCollect(client, cfg))
+	add(toolServerHealth(), handleServerHealth(client, cfg))
+	add(toolHunts(), handleHunts(client, cfg))
+	add(toolListHuntFlows(), handleListHuntFlows(client, cfg))
+	add(toolGetHuntResults(), handleGetHuntResults(client, cfg))
 
-	if cfg.EnableDangerousTools {
-		add(toolRunVQL(), handleRunVQL(client, cfg))
-		add(toolExportVQL(), handleExportVQL(client, cfg))
-	}
+	add(toolRunVQL(), handleRunVQL(client, cfg))
+	add(toolExportVQL(), handleExportVQL(client, cfg))
 }
 
 // --- helpers ---
@@ -232,7 +237,26 @@ func getInt(args map[string]any, key string, def int) int {
 	return def
 }
 
+func getParams(args map[string]any) (map[string]any, error) {
+	raw, ok := args["parameters"]
+	if !ok {
+		return nil, nil
+	}
+	params, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("parameters must be an object")
+	}
+	return params, nil
+}
+
 func decodeArgs(req *mcp.CallToolRequest) (map[string]any, error) {
+	if req == nil || req.Params == nil {
+		return nil, fmt.Errorf("missing tool request")
+	}
+	allowed, ok := allowedToolArgs[req.Params.Name]
+	if !ok {
+		return nil, fmt.Errorf("unknown tool %q", req.Params.Name)
+	}
 	if req.Params.Arguments == nil {
 		return map[string]any{}, nil
 	}
@@ -244,7 +268,58 @@ func decodeArgs(req *mcp.CallToolRequest) (map[string]any, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
+	if out == nil {
+		return nil, fmt.Errorf("arguments must be a JSON object")
+	}
+	var unknown []string
+	for key := range out {
+		if !allowed[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("unknown argument(s): %s", strings.Join(unknown, ", "))
+	}
 	return out, nil
+}
+
+var allowedToolArgs = map[string]map[string]bool{
+	"list_orgs": {},
+	"clients": {
+		"client_id": true, "search": true, "os_filter": true, "limit": true,
+		"label": true, "online": true, "include_metadata": true,
+		"search_all_orgs": true, "org_id": true,
+	},
+	"list_artifacts":   {"name_regex": true, "org_id": true},
+	"artifact_details": {"artifact_name": true, "org_id": true},
+	"collect_artifact": {
+		"client_id": true, "artifact": true, "parameters": true, "timeout": true,
+		"org_id": true,
+	},
+	"inspect_collections": {"client_id": true, "flow_id": true, "limit": true, "org_id": true},
+	"get_collection_results": {
+		"client_id": true, "flow_id": true, "artifact": true, "fields": true,
+		"max_retries": true, "retry_delay": true, "org_id": true,
+	},
+	"realtime_collect": {
+		"client_id": true, "artifact": true, "source": true, "parameters": true,
+		"fields": true, "org_id": true,
+	},
+	"server_health": {},
+	"hunts":         {"hunt_id": true, "summary": true, "limit": true, "org_id": true},
+	"list_hunt_flows": {
+		"hunt_id": true, "limit": true, "start_row": true, "full": true,
+		"org_id": true,
+	},
+	"get_hunt_results": {
+		"hunt_id": true, "artifact": true, "source": true, "fields": true,
+		"limit": true, "org_id": true,
+	},
+	"run_vql": {"query": true, "org_id": true},
+	"export_vql": {
+		"query": true, "filepath": true, "max_file_mb": true, "org_id": true,
+	},
 }
 
 // truncateRows trims a row slice so the marshaled JSON stays under maxBytes,
@@ -262,6 +337,16 @@ func truncateRows(rows []map[string]any, maxBytes int) ([]map[string]any, int) {
 		}
 	}
 	return rows, 0
+}
+
+func rowsResult(rows []map[string]any, cfg *raptor.Config) *mcp.CallToolResult {
+	rows, dropped := truncateRows(rows, cfg.MaxResponseBytes)
+	result := map[string]any{"ok": true, "data": rows}
+	if dropped > 0 {
+		result["truncated"] = dropped
+	}
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return textResult(string(b))
 }
 
 // --- list_orgs ---
@@ -284,74 +369,61 @@ func handleListOrgs(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 	}
 }
 
-// --- client_info ---
+// --- clients ---
 
-func toolClientInfo() *mcp.Tool {
+func toolClients() *mcp.Tool {
 	return &mcp.Tool{
-		Name:        "client_info",
-		Description: toolDescription("client_info"),
+		Name:        "clients",
+		Description: toolDescription("clients"),
 		InputSchema: schema(map[string]any{
-			"hostname":        prop("string", "Hostname or FQDN to search for (regex)"),
-			"org_id":          prop("string", "Org ID (optional)"),
-			"search_all_orgs": prop("boolean", "Search across all orgs"),
-		}, "hostname"),
-	}
-}
-
-func handleClientInfo(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args, err := decodeArgs(req)
-		if err != nil {
-			return toolErrMsg("invalid arguments: " + err.Error()), nil
-		}
-		hostname := getStr(args, "hostname")
-		if hostname == "" {
-			return toolErrMsg("hostname is required"), nil
-		}
-		orgID := client.OrgID(getStr(args, "org_id"))
-		vql := fmt.Sprintf(`
-SELECT client_id,
-       timestamp(epoch=first_seen_at) AS FirstSeen,
-       timestamp(epoch=last_seen_at) AS LastSeen,
-       os_info.hostname AS Hostname,
-       os_info.fqdn AS Fqdn,
-       os_info.system AS OSType,
-       os_info.release AS OS,
-       os_info.machine AS Machine,
-       agent_information.version AS AgentVersion
-FROM clients()
-WHERE os_info.hostname =~ %s OR os_info.fqdn =~ %s
-ORDER BY LastSeen DESC LIMIT 1`,
-			raptor.VQLLiteral(hostname), raptor.VQLLiteral(hostname))
-		rows, err := client.RunVQL(ctx, vql, orgID)
-		if err != nil {
-			return toolErr(err), nil
-		}
-		return textOK(map[string]any{"ok": true, "data": rows})
-	}
-}
-
-// --- list_clients ---
-
-func toolListClients() *mcp.Tool {
-	return &mcp.Tool{
-		Name:        "list_clients",
-		Description: toolDescription("list_clients"),
-		InputSchema: schema(map[string]any{
-			"search":    prop("string", "Regex filter on hostname, FQDN, or client_id"),
-			"os_filter": prop("string", "Regex filter on OS type (e.g. linux, windows)"),
-			"limit":     prop("integer", "Max results (default 50)"),
-			"org_id":    prop("string", "Org ID (optional)"),
+			"client_id":        prop("string", "Exact client ID for a detailed lookup"),
+			"search":           prop("string", "Regex filter on hostname, FQDN, or client_id"),
+			"os_filter":        prop("string", "Regex filter on OS type (e.g. linux, windows)"),
+			"limit":            prop("integer", "Max results (default 50)"),
+			"label":            prop("string", "Filter using the server label index"),
+			"online":           prop("boolean", "Only clients seen within the last 15 minutes"),
+			"include_metadata": prop("boolean", "Include stored metadata; requires client_id"),
+			"search_all_orgs":  prop("boolean", "Search across all organizations"),
+			"org_id":           prop("string", "Org ID (optional)"),
 		}),
 	}
 }
 
-func handleListClients(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+func handleClients(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, err := decodeArgs(req)
 		if err != nil {
 			return toolErrMsg("invalid arguments: " + err.Error()), nil
 		}
+		clientID := getStr(args, "client_id")
+		includeMetadata := getBool(args, "include_metadata")
+		if includeMetadata && clientID == "" {
+			return toolErrMsg("include_metadata requires client_id"), nil
+		}
+		orgID := client.OrgID(getStr(args, "org_id"))
+
+		if clientID != "" {
+			vql := fmt.Sprintf(`SELECT * FROM clients(client_id=%s) LIMIT 1`,
+				raptor.VQLLiteral(clientID))
+			rows, err := client.RunVQL(ctx, vql, orgID)
+			if err != nil {
+				return toolErr(err), nil
+			}
+			if includeMetadata && len(rows) > 0 {
+				metadataVQL := fmt.Sprintf(
+					`SELECT client_metadata(client_id=%s) AS metadata FROM scope()`,
+					raptor.VQLLiteral(clientID))
+				metadataRows, err := client.RunVQL(ctx, metadataVQL, orgID)
+				if err != nil {
+					return toolErr(err), nil
+				}
+				if len(metadataRows) > 0 {
+					rows[0]["metadata"] = metadataRows[0]["metadata"]
+				}
+			}
+			return textOK(map[string]any{"ok": true, "data": rows})
+		}
+
 		search := getStr(args, "search")
 		if search == "" {
 			search = "."
@@ -364,7 +436,14 @@ func handleListClients(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandle
 		if limit <= 0 || limit > 1000 {
 			return toolErrMsg("limit must be between 1 and 1000"), nil
 		}
-		orgID := client.OrgID(getStr(args, "org_id"))
+		source := "clients()"
+		if label := getStr(args, "label"); label != "" {
+			source = fmt.Sprintf("clients(search=%s)", raptor.VQLLiteral("label:"+label))
+		}
+		onlineWhere := ""
+		if getBool(args, "online") {
+			onlineWhere = "\n  AND (now() - last_seen_at / 1000000) < 900"
+		}
 		vql := fmt.Sprintf(`
 SELECT client_id,
        timestamp(epoch=first_seen_at) AS FirstSeen,
@@ -376,15 +455,43 @@ SELECT client_id,
        os_info.machine AS Machine,
        agent_information.version AS AgentVersion,
        last_ip AS LastIP
-FROM clients()
-WHERE (os_info.hostname =~ %s OR os_info.fqdn =~ %s OR client_id =~ %s)
-  AND os_info.system =~ %s
-ORDER BY LastSeen DESC LIMIT %d`,
+	FROM %s
+	WHERE (os_info.hostname =~ %s OR os_info.fqdn =~ %s OR client_id =~ %s)
+	  AND os_info.system =~ %s%s
+	ORDER BY LastSeen DESC LIMIT %d`,
+			source,
 			raptor.VQLLiteral(search), raptor.VQLLiteral(search),
-			raptor.VQLLiteral(search), raptor.VQLLiteral(osFilter), limit)
-		rows, err := client.RunVQL(ctx, vql, orgID)
-		if err != nil {
-			return toolErr(err), nil
+			raptor.VQLLiteral(search), raptor.VQLLiteral(osFilter), onlineWhere, limit)
+		var rows []map[string]any
+		if getBool(args, "search_all_orgs") {
+			orgs, err := client.RunVQL(ctx, `SELECT OrgId FROM orgs()`, "")
+			if err != nil {
+				return toolErr(err), nil
+			}
+			for _, org := range orgs {
+				orgID, ok := org["OrgId"].(string)
+				if !ok || orgID == "" {
+					continue
+				}
+				orgRows, err := client.RunVQL(ctx, vql, orgID)
+				if err != nil {
+					return toolErr(err), nil
+				}
+				rows = append(rows, orgRows...)
+			}
+			sort.SliceStable(rows, func(i, j int) bool {
+				left, _ := rows[i]["LastSeen"].(string)
+				right, _ := rows[j]["LastSeen"].(string)
+				return left > right
+			})
+			if len(rows) > limit {
+				rows = rows[:limit]
+			}
+		} else {
+			rows, err = client.RunVQL(ctx, vql, orgID)
+			if err != nil {
+				return toolErr(err), nil
+			}
 		}
 		return textOK(map[string]any{"ok": true, "data": rows})
 	}
@@ -501,14 +608,16 @@ func handleCollectArtifact(client *raptor.Client, cfg *raptor.Config) mcp.ToolHa
 		orgID := client.OrgID(getStr(args, "org_id"))
 
 		envPart := ""
-		if rawParams, ok := args["parameters"]; ok {
-			if params, ok := rawParams.(map[string]any); ok && len(params) > 0 {
-				envDict, err := raptor.BuildEnvDict(params)
-				if err != nil {
-					return toolErr(err), nil
-				}
-				envPart = fmt.Sprintf(", env=dict(%s)", envDict)
+		params, err := getParams(args)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		if len(params) > 0 {
+			envDict, err := raptor.BuildEnvDict(params)
+			if err != nil {
+				return toolErr(err), nil
 			}
+			envPart = fmt.Sprintf(", env=dict(%s)", envDict)
 		}
 
 		vql := fmt.Sprintf(`
@@ -525,21 +634,22 @@ FROM foreach(row=collection)`,
 	}
 }
 
-// --- list_collections ---
+// --- inspect_collections ---
 
-func toolListCollections() *mcp.Tool {
+func toolInspectCollections() *mcp.Tool {
 	return &mcp.Tool{
-		Name:        "list_collections",
-		Description: toolDescription("list_collections"),
+		Name:        "inspect_collections",
+		Description: toolDescription("inspect_collections"),
 		InputSchema: schema(map[string]any{
 			"client_id": prop("string", "Target client ID"),
-			"limit":     prop("integer", "Max results (default 20)"),
+			"flow_id":   prop("string", "Exact flow ID for detailed metadata"),
+			"limit":     prop("integer", "Max results when listing (default 20)"),
 			"org_id":    prop("string", "Org ID (optional)"),
 		}, "client_id"),
 	}
 }
 
-func handleListCollections(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+func handleInspectCollections(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args, err := decodeArgs(req)
 		if err != nil {
@@ -549,11 +659,34 @@ func handleListCollections(client *raptor.Client, cfg *raptor.Config) mcp.ToolHa
 		if clientID == "" {
 			return toolErrMsg("client_id is required"), nil
 		}
+		orgID := client.OrgID(getStr(args, "org_id"))
+		if flowID := getStr(args, "flow_id"); flowID != "" {
+			vql := fmt.Sprintf(`
+SELECT session_id AS flow_id,
+       request.artifacts AS artifacts,
+       state,
+       timestamp(epoch=create_time) AS created,
+       timestamp(epoch=start_time) AS started,
+       timestamp(epoch=active_time) AS active,
+       timestamp(epoch=completion_time) AS completed,
+       timestamp(epoch=expiry_time) AS expires,
+       total_collected_rows AS rows,
+       total_uploaded_files AS uploaded_files,
+       request.creator AS creator
+FROM flows(client_id=%s)
+WHERE session_id=%s
+LIMIT 1`,
+				raptor.VQLLiteral(clientID), raptor.VQLLiteral(flowID))
+			rows, err := client.RunVQL(ctx, vql, orgID)
+			if err != nil {
+				return toolErr(err), nil
+			}
+			return rowsResult(rows, cfg), nil
+		}
 		limit := getInt(args, "limit", 20)
 		if limit <= 0 || limit > 1000 {
 			return toolErrMsg("limit must be between 1 and 1000"), nil
 		}
-		orgID := client.OrgID(getStr(args, "org_id"))
 		vql := fmt.Sprintf(`
 SELECT session_id AS flow_id,
        request.artifacts AS artifacts,
@@ -583,6 +716,7 @@ func toolGetCollectionResults() *mcp.Tool {
 			"client_id":   prop("string", "Target client ID"),
 			"flow_id":     prop("string", "Flow ID from collect_artifact"),
 			"artifact":    prop("string", "Artifact name (or artifact/source for multi-source)"),
+			"fields":      prop("string", "Comma-separated result fields (default *)"),
 			"max_retries": prop("integer", "Max poll attempts (default 20)"),
 			"retry_delay": prop("integer", "Seconds between poll attempts (default 5)"),
 			"org_id":      prop("string", "Org ID (optional)"),
@@ -612,6 +746,14 @@ func handleGetCollectionResults(client *raptor.Client, cfg *raptor.Config) mcp.T
 		}
 		if retryDelay < 0 || retryDelay > 300 {
 			return toolErrMsg("retry_delay must be between 0 and 300 seconds"), nil
+		}
+		fieldsArg := getStr(args, "fields")
+		if fieldsArg == "" {
+			fieldsArg = "*"
+		}
+		fields, err := raptor.ValidateFieldList(fieldsArg)
+		if err != nil {
+			return toolErr(err), nil
 		}
 		orgID := client.OrgID(getStr(args, "org_id"))
 
@@ -653,8 +795,8 @@ WHERE message =~ %s LIMIT 1`,
 		}
 
 		// fetch results
-		resultsVQL := fmt.Sprintf(`SELECT * FROM source(client_id=%s, flow_id=%s, artifact=%s)`,
-			raptor.VQLLiteral(clientID), raptor.VQLLiteral(flowID), raptor.VQLLiteral(artifact))
+		resultsVQL := fmt.Sprintf(`SELECT %s FROM source(client_id=%s, flow_id=%s, artifact=%s)`,
+			fields, raptor.VQLLiteral(clientID), raptor.VQLLiteral(flowID), raptor.VQLLiteral(artifact))
 		rows, err := client.RunVQL(ctx, resultsVQL, orgID)
 		if err != nil {
 			return toolErr(err), nil
@@ -685,6 +827,7 @@ func toolRealtimeCollect() *mcp.Tool {
 			"artifact":   prop("string", "Artifact name to collect"),
 			"source":     prop("string", "Source name for multi-source artifacts (optional)"),
 			"parameters": map[string]any{"type": "object", "description": "Optional artifact parameters as key/value pairs"},
+			"fields":     prop("string", "Comma-separated result fields (default *)"),
 			"org_id":     prop("string", "Org ID (optional)"),
 		}, "client_id", "artifact"),
 	}
@@ -699,6 +842,14 @@ func handleRealtimeCollect(client *raptor.Client, cfg *raptor.Config) mcp.ToolHa
 		clientID := getStr(args, "client_id")
 		artifact := getStr(args, "artifact")
 		source := getStr(args, "source")
+		fieldsArg := getStr(args, "fields")
+		if fieldsArg == "" {
+			fieldsArg = "*"
+		}
+		fields, err := raptor.ValidateFieldList(fieldsArg)
+		if err != nil {
+			return toolErr(err), nil
+		}
 		if clientID == "" {
 			return toolErrMsg("client_id is required"), nil
 		}
@@ -708,14 +859,16 @@ func handleRealtimeCollect(client *raptor.Client, cfg *raptor.Config) mcp.ToolHa
 		orgID := client.OrgID(getStr(args, "org_id"))
 
 		envPart := ""
-		if rawParams, ok := args["parameters"]; ok {
-			if params, ok := rawParams.(map[string]any); ok && len(params) > 0 {
-				envDict, err := raptor.BuildEnvDict(params)
-				if err != nil {
-					return toolErr(err), nil
-				}
-				envPart = fmt.Sprintf(", env=dict(%s)", envDict)
+		params, err := getParams(args)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		if len(params) > 0 {
+			envDict, err := raptor.BuildEnvDict(params)
+			if err != nil {
+				return toolErr(err), nil
 			}
+			envPart = fmt.Sprintf(", env=dict(%s)", envDict)
 		}
 
 		resultArtifact := artifact
@@ -726,10 +879,10 @@ func handleRealtimeCollect(client *raptor.Client, cfg *raptor.Config) mcp.ToolHa
 		vql := fmt.Sprintf(`
 LET collection <= collect_client(urgent='TRUE', client_id=%s, artifacts=%s%s)
 LET get_monitoring = SELECT * FROM watch_monitoring(artifact='System.Flow.Completion') WHERE FlowId = collection.flow_id LIMIT 1
-LET get_results = SELECT * FROM source(client_id=collection.request.client_id, flow_id=collection.flow_id, artifact=%s)
+LET get_results = SELECT %s FROM source(client_id=collection.request.client_id, flow_id=collection.flow_id, artifact=%s)
 SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 			raptor.VQLLiteral(clientID), raptor.VQLLiteral(artifact), envPart,
-			raptor.VQLLiteral(resultArtifact))
+			fields, raptor.VQLLiteral(resultArtifact))
 
 		rows, err := client.RunVQL(ctx, vql, orgID)
 		if err != nil {
@@ -745,7 +898,197 @@ SELECT * FROM foreach(row=get_monitoring, query=get_results)`,
 	}
 }
 
-// --- run_vql (dangerous) ---
+// --- server_health ---
+
+func toolServerHealth() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "server_health",
+		Description: toolDescription("server_health"),
+		InputSchema: schema(map[string]any{}),
+	}
+}
+
+func handleServerHealth(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		status, err := client.Health(ctx)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return textOK(map[string]any{"ok": true, "data": []map[string]any{{"status": status}}})
+	}
+}
+
+// --- hunts ---
+
+func toolHunts() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "hunts",
+		Description: toolDescription("hunts"),
+		InputSchema: schema(map[string]any{
+			"hunt_id": prop("string", "Exact hunt ID for a detailed lookup"),
+			"summary": prop("boolean", "Return summary metadata for an exact hunt lookup"),
+			"limit":   prop("integer", "Max results when listing (default 50)"),
+			"org_id":  prop("string", "Org ID (optional)"),
+		}),
+	}
+}
+
+func handleHunts(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := decodeArgs(req)
+		if err != nil {
+			return toolErrMsg("invalid arguments: " + err.Error()), nil
+		}
+		orgID := client.OrgID(getStr(args, "org_id"))
+		if huntID := getStr(args, "hunt_id"); huntID != "" {
+			summary := "FALSE"
+			if getBool(args, "summary") {
+				summary = "TRUE"
+			}
+			vql := fmt.Sprintf(`SELECT * FROM hunts(hunt_id=%s, summary=%s) LIMIT 1`,
+				raptor.VQLLiteral(huntID), summary)
+			rows, err := client.RunVQL(ctx, vql, orgID)
+			if err != nil {
+				return toolErr(err), nil
+			}
+			return rowsResult(rows, cfg), nil
+		}
+		if getBool(args, "summary") {
+			return toolErrMsg("summary requires hunt_id"), nil
+		}
+		limit := getInt(args, "limit", 50)
+		if limit <= 0 || limit > 1000 {
+			return toolErrMsg("limit must be between 1 and 1000"), nil
+		}
+		vql := fmt.Sprintf(`
+SELECT hunt_id,
+       hunt_description,
+       state,
+       timestamp(epoch=create_time) AS created,
+       timestamp(epoch=start_time) AS started,
+       timestamp(epoch=expires) AS expires,
+       stats.total_clients_scheduled AS clients_scheduled,
+       stats.total_clients_with_results AS clients_with_results,
+       stats.total_clients_without_results AS clients_without_results,
+       stats.total_clients_with_errors AS clients_with_errors,
+       stats.total_collected_rows AS rows,
+       stats.total_uploaded_bytes AS uploaded_bytes,
+       creator
+FROM hunts()
+ORDER BY created DESC LIMIT %d`, limit)
+		rows, err := client.RunVQL(ctx, vql, orgID)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return rowsResult(rows, cfg), nil
+	}
+}
+
+// --- list_hunt_flows ---
+
+func toolListHuntFlows() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "list_hunt_flows",
+		Description: toolDescription("list_hunt_flows"),
+		InputSchema: schema(map[string]any{
+			"hunt_id":   prop("string", "Hunt ID"),
+			"limit":     prop("integer", "Max results (default 50)"),
+			"start_row": prop("integer", "Zero-based starting row (default 0)"),
+			"full":      prop("boolean", "Include full flow details"),
+			"org_id":    prop("string", "Org ID (optional)"),
+		}, "hunt_id"),
+	}
+}
+
+func handleListHuntFlows(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := decodeArgs(req)
+		if err != nil {
+			return toolErrMsg("invalid arguments: " + err.Error()), nil
+		}
+		huntID := getStr(args, "hunt_id")
+		if huntID == "" {
+			return toolErrMsg("hunt_id is required"), nil
+		}
+		limit := getInt(args, "limit", 50)
+		if limit <= 0 || limit > 1000 {
+			return toolErrMsg("limit must be between 1 and 1000"), nil
+		}
+		startRow := getInt(args, "start_row", 0)
+		if startRow < 0 {
+			return toolErrMsg("start_row must be zero or greater"), nil
+		}
+		basicInfo := "TRUE"
+		if getBool(args, "full") {
+			basicInfo = "FALSE"
+		}
+		vql := fmt.Sprintf(
+			`SELECT * FROM hunt_flows(hunt_id=%s, start_row=%d, basic_info=%s) LIMIT %d`,
+			raptor.VQLLiteral(huntID), startRow, basicInfo, limit)
+		rows, err := client.RunVQL(ctx, vql, client.OrgID(getStr(args, "org_id")))
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return rowsResult(rows, cfg), nil
+	}
+}
+
+// --- get_hunt_results ---
+
+func toolGetHuntResults() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "get_hunt_results",
+		Description: toolDescription("get_hunt_results"),
+		InputSchema: schema(map[string]any{
+			"hunt_id":  prop("string", "Hunt ID"),
+			"artifact": prop("string", "Artifact name"),
+			"source":   prop("string", "Source name for multi-source artifacts"),
+			"fields":   prop("string", "Comma-separated result fields (default *)"),
+			"limit":    prop("integer", "Max results (default 100)"),
+			"org_id":   prop("string", "Org ID (optional)"),
+		}, "hunt_id", "artifact"),
+	}
+}
+
+func handleGetHuntResults(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, err := decodeArgs(req)
+		if err != nil {
+			return toolErrMsg("invalid arguments: " + err.Error()), nil
+		}
+		huntID := getStr(args, "hunt_id")
+		artifact := getStr(args, "artifact")
+		if huntID == "" || artifact == "" {
+			return toolErrMsg("hunt_id and artifact are required"), nil
+		}
+		if err := raptor.ValidateArtifactName(artifact); err != nil {
+			return toolErr(err), nil
+		}
+		fieldsArg := getStr(args, "fields")
+		if fieldsArg == "" {
+			fieldsArg = "*"
+		}
+		fields, err := raptor.ValidateFieldList(fieldsArg)
+		if err != nil {
+			return toolErr(err), nil
+		}
+		limit := getInt(args, "limit", 100)
+		if limit <= 0 || limit > 10000 {
+			return toolErrMsg("limit must be between 1 and 10000"), nil
+		}
+		vql := fmt.Sprintf(
+			`SELECT %s FROM hunt_results(hunt_id=%s, artifact=%s, source=%s) LIMIT %d`,
+			fields, raptor.VQLLiteral(huntID), raptor.VQLLiteral(artifact),
+			raptor.VQLLiteral(getStr(args, "source")), limit)
+		rows, err := client.RunVQL(ctx, vql, client.OrgID(getStr(args, "org_id")))
+		if err != nil {
+			return toolErr(err), nil
+		}
+		return rowsResult(rows, cfg), nil
+	}
+}
+
+// --- run_vql ---
 
 func toolRunVQL() *mcp.Tool {
 	return &mcp.Tool{
@@ -765,8 +1108,8 @@ func handleRunVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 			return toolErrMsg("invalid arguments: " + err.Error()), nil
 		}
 		query := getStr(args, "query")
-		if query == "" {
-			return toolErrMsg("query is required"), nil
+		if err := raptor.ValidateReadOnlyVQL(query); err != nil {
+			return toolErr(err), nil
 		}
 		orgID := client.OrgID(getStr(args, "org_id"))
 		rows, err := client.RunVQL(ctx, query, orgID)
@@ -788,7 +1131,7 @@ func handleRunVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler {
 	}
 }
 
-// --- export_vql (dangerous) ---
+// --- export_vql ---
 
 func toolExportVQL() *mcp.Tool {
 	return &mcp.Tool{
@@ -810,8 +1153,8 @@ func handleExportVQL(client *raptor.Client, cfg *raptor.Config) mcp.ToolHandler 
 			return toolErrMsg("invalid arguments: " + err.Error()), nil
 		}
 		query := getStr(args, "query")
-		if query == "" {
-			return toolErrMsg("query is required"), nil
+		if err := raptor.ValidateReadOnlyVQL(query); err != nil {
+			return toolErr(err), nil
 		}
 		basePath := getStr(args, "filepath")
 		if basePath == "" {

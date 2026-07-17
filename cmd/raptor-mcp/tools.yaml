@@ -1,32 +1,41 @@
 list_orgs: >-
   List all Velociraptor organizations (tenants). Call this first if the org is unknown.
 
-client_info: >-
-  Find a client by hostname or FQDN. Call before collection tools when you only know the hostname.
-
-list_clients: >-
-  List clients, optionally filtered by hostname/FQDN pattern or OS type.
+clients: >-
+  Find, list, or inspect clients. Use client_id for an exact detailed lookup, or search and filters for discovery.
 
 list_artifacts: >-
   List available artifact definitions. Use name_regex to filter. Call before collect_artifact to find the correct artifact name.
 
 artifact_details: >-
-  Get full artifact metadata including parameters and source names. Call before get_collection_results for multi-source artifacts.
+  Get full artifact metadata including parameters and source names. Call before collecting multi-source artifacts.
 
 collect_artifact: >-
-  Start an async artifact collection on a client. Returns a flow_id. Follow up with get_collection_results to retrieve results.
+  Start an asynchronous artifact collection on a client. Returns a flow_id for get_collection_results.
 
-list_collections: >-
-  List past and in-progress artifact collections (flows) for a client, ordered by most recent first.
+inspect_collections: >-
+  List a client's past and in-progress collections, or inspect one collection's metadata when flow_id is provided.
 
 get_collection_results: >-
-  Poll a flow for completion and retrieve results. Use artifact_details first to check for multiple sources. For multi-source artifacts pass the source name as 'artifact/source'.
+  Poll a flow for completion and retrieve selected result fields. Use artifact_details first to check for multiple sources. For multi-source artifacts pass the source name as 'artifact/source'.
 
 realtime_collect: >-
-  Blocking collection: starts a flow and waits for completion via watch_monitoring. Best for fast artifacts. Returns results directly.
+  Start a blocking collection and wait for completion. Best for fast artifacts; returns selected result fields directly.
+
+server_health: >-
+  Check whether the Velociraptor API server is serving requests.
+
+hunts: >-
+  List recent fleet hunts, or inspect one hunt's metadata when hunt_id is provided.
+
+list_hunt_flows: >-
+  List flows launched by a fleet hunt, with optional pagination and full details.
+
+get_hunt_results: >-
+  Retrieve selected fields from one artifact in a fleet hunt.
 
 run_vql: >-
-  Execute a raw VQL query with no sanitization. Only available when dangerous tools are enabled.
+  Execute one read-only SELECT VQL query. Multiple statements and non-SELECT queries are rejected.
 
 export_vql: >-
-  Execute a VQL query and stream all results to a JSONL file on the server. Handles arbitrarily large result sets without hitting response size limits. Returns a summary with file path and row count. Only available when dangerous tools are enabled.
+  Execute one read-only SELECT VQL query and stream all results to a JSONL file on the server.

@@ -10,10 +10,9 @@ import (
 )
 
 var (
-	flagConfig    string
-	flagOrgID     string
-	flagOutput    string
-	flagDangerous bool
+	flagConfig string
+	flagOrgID  string
+	flagOutput string
 
 	client        *raptor.Client
 	cfg           *raptor.Config
@@ -36,9 +35,6 @@ var rootCmd = &cobra.Command{
 		if flagOrgID != "" {
 			cfg.OrgID = flagOrgID
 		}
-		if flagDangerous {
-			cfg.EnableDangerousTools = true
-		}
 		baseCtx := cmd.Context()
 		if baseCtx == nil {
 			baseCtx = context.Background()
@@ -56,7 +52,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "path to api_client.yaml")
 	rootCmd.PersistentFlags().StringVar(&flagOrgID, "org", "", "default org ID")
 	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "table", "output format: table, json, yaml")
-	rootCmd.PersistentFlags().BoolVar(&flagDangerous, "dangerous", false, "enable dangerous tools")
 }
 
 func orgID() string {

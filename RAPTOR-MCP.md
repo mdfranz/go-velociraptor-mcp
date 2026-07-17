@@ -20,7 +20,7 @@ Key principles:
 - Fail-fast configuration: validate config and required files before starting the MCP loop.
 - Clean MCP responses: operational failures return MCP tool errors (`IsError: true`), not raw Go handler errors.
 - Reuse one long-lived gRPC client: connect once at startup and share it across tool calls.
-- Validate before dispatch: reject malformed artifact names, fields, parameter maps, and dangerous queries before opening a stream.
+- Validate before dispatch: reject malformed artifact names, fields, parameter maps, and non-SELECT VQL before opening a stream.
 
 Recommended SDK dependency:
 
@@ -52,12 +52,12 @@ cmd/raptor-mcp/
 
 cmd/raptor-cli/
   main.go         # cobra root, global flags, config bootstrap
-  cmd_client.go   # client_info, list_clients
+  cmd_client.go   # client discovery and inspection
   cmd_artifact.go # list_artifacts, artifact_details
   cmd_collect.go  # collect_artifact, get_collection_results, realtime_collect
-  cmd_hunt.go     # hunt_across_fleet, get_hunt_results
+  cmd_hunt.go     # hunts, list_hunt_flows, get_hunt_results
   cmd_org.go      # list_orgs
-  cmd_vql.go      # run_vql (gated by --dangerous)
+  cmd_vql.go      # read-only VQL operations
   output.go       # table/JSON/YAML output formatting
   version.go      # build-time version injection
 
@@ -196,14 +196,13 @@ type Config struct {
     PinnedServerName    string `yaml:"pinned_server_name"`
     MaxGRPCRecvSize     int    `yaml:"max_grpc_recv_size"`
 
-    OrgID                string
-    EnableDangerousTools bool
-    DisabledTools        []string
-    LogLevel             string
-    LogFile              string
-    LockFile             string
-    MaxResponseBytes     int
-    DefaultTimeout       time.Duration
+    OrgID            string
+    DisabledTools    []string
+    LogLevel         string
+    LogFile           string
+    LockFile          string
+    MaxResponseBytes  int
+    DefaultTimeout    time.Duration
 }
 ```
 
@@ -221,7 +220,6 @@ Environment variables should only control MCP-specific behavior plus safe runtim
 |---|---|---|---|
 | `VELOCIRAPTOR_API_CONFIG` | No | discovery chain | explicit YAML path |
 | `VELOCIRAPTOR_ORG_ID` | No | empty | default org injection |
-| `ENABLE_DANGEROUS_TOOLS` | No | `false` | register unrestricted tools |
 | `VELOCIRAPTOR_DISABLED_TOOLS` | No | empty | comma-separated tool denylist |
 | `RAPTOR_MAX_RESPONSE_BYTES` | No | `32000` | max returned payload size |
 | `RAPTOR_TIMEOUT_SECONDS` | No | `300` | base tool timeout |
@@ -256,8 +254,7 @@ Recommended startup fields:
 - `org_id`
 - `max_response_bytes`
 - `timeout`
-- `dangerous_tools`
-- `disabled_tools`
+  - `disabled_tools`
 - `log_file`
 - `lock_file`
 
@@ -423,7 +420,7 @@ func buildSchema(properties map[string]any, required ...string) json.RawMessage 
 
 #### Registration rules
 
-- register dangerous tools only when explicitly enabled;
+- register the read-only VQL tools by default;
 - apply disabled-tool filtering centrally;
 - keep tool names stable once published;
 - use descriptions to tell the model when to call discovery tools first.
@@ -650,7 +647,7 @@ Rules:
 - artifact names must pass `validateArtifactName()` before interpolation;
 - `fields` is a whitelist problem, not an escaping problem;
 - parameter names inside `env=dict(...)` must be validated;
-- never accept raw VQL except through an explicitly gated dangerous tool.
+- accept only a single SELECT VQL statement for ad hoc query tools.
 
 ### 5.3 Safe Environment Dict Assembly
 
@@ -677,7 +674,7 @@ Add pre-flight limits for heavy tools:
 - cap `limit` on list-style tools;
 - reject empty `artifact` or `client_id`;
 - require bounded polling arguments for collection retrieval;
-- gate `run_vql` and other unrestricted/remediation actions behind config;
+- reject non-SELECT and multi-statement ad hoc VQL before dispatch;
 - log validation failures at `WARN`, not `ERROR`, because the remote operation never started.
 
 ---
@@ -714,48 +711,10 @@ Base argument rules:
 
 ### 6.1 Client Discovery
 
-`client_info`
-- **Args**: `hostname` (required), `org_id`, `search_all_orgs`
-- **Returns**: Best matching client record.
-- **Guidance**: Use before collection tools when the model only knows the hostname/FQDN.
-- **VQL Template**:
-  ```sql
-  SELECT client_id,
-         timestamp(epoch=first_seen_at) as FirstSeen,
-         timestamp(epoch=last_seen_at) as LastSeen,
-         os_info.hostname as Hostname,
-         os_info.fqdn as Fqdn,
-         os_info.system as OSType,
-         os_info.release as OS,
-         os_info.machine as Machine,
-         agent_information.version as AgentVersion
-  FROM clients()
-  WHERE os_info.hostname =~ HostnamePattern OR os_info.fqdn =~ HostnamePattern
-  ORDER BY LastSeen DESC LIMIT 1
-  ```
-  *(Note: If `search_all_orgs` is true, the VQL should query across all organizations by wrapping the search inside a `foreach(row={SELECT OrgId FROM orgs()})` query running in each Org context).*
-
-`list_clients`
-- **Args**: `search`, `os_filter`, `limit`, `org_id`
-- **Returns**: Array of client summaries.
-- **Guidance**: Validates `limit` bounds before querying.
-- **VQL Template**:
-  ```sql
-  SELECT client_id,
-         timestamp(epoch=first_seen_at) as FirstSeen,
-         timestamp(epoch=last_seen_at) as LastSeen,
-         os_info.hostname as Hostname,
-         os_info.fqdn as Fqdn,
-         os_info.system as OSType,
-         os_info.release as OS,
-         os_info.machine as Machine,
-         agent_information.version as AgentVersion,
-         last_ip as LastIP
-  FROM clients()
-  WHERE (os_info.hostname =~ SearchPattern OR os_info.fqdn =~ SearchPattern OR client_id =~ SearchPattern)
-    AND os_info.system =~ OSFilterPattern
-  ORDER BY LastSeen DESC LIMIT Limit
-  ```
+`clients`
+- **Args**: optional `client_id`, `search`, `os_filter`, `label`, `online`, `limit`, `include_metadata`, `search_all_orgs`, and `org_id`.
+- **Behavior**: Lists matching client summaries when searching, or returns the complete record for an exact `client_id`.
+- **Metadata**: `include_metadata` is available for exact lookups.
 
 ---
 
@@ -831,14 +790,9 @@ Base argument rules:
 
 ### 6.4 Hunts
 
-`hunt_across_fleet`
-- **Args**: `artifact`, `parameters`, `description`, `os_filter`, `org_id`
-- **Behavior**: Creates a fleet-wide hunt.
-- **Guidance**: Validates that compiled parameters exist in the hunt's `start_request` before reporting success.
-- **VQL Template**:
-  ```sql
-  SELECT hunt(description=Description, artifacts=ArtifactName, spec=SpecVQL, os=OSFilter) AS HuntResult FROM scope()
-  ```
+`hunts`
+- **Args**: optional `hunt_id`, `summary`, `limit`, and `org_id`.
+- **Behavior**: Lists recent hunt summaries without `hunt_id`, or returns detailed metadata for an exact hunt lookup.
 
 `get_hunt_results`
 - **Args**: `hunt_id`, `artifact`, `fields`, `limit`, `org_id`
@@ -849,6 +803,10 @@ Base argument rules:
   FROM hunt_results(hunt_id=HuntID, artifact=ArtifactName)
   LIMIT Limit
   ```
+
+`list_hunt_flows`
+- **Args**: `hunt_id`, `limit`, `start_row`, `full`, and `org_id`.
+- **Behavior**: Lists the client flows launched by a hunt with pagination and optional full details.
 
 ---
 
@@ -864,32 +822,17 @@ Base argument rules:
 
 ---
 
-### 6.6 Dangerous Tools
-
-Register only when `ENABLE_DANGEROUS_TOOLS=true`.
+### 6.6 Read-only VQL Tools
 
 `run_vql`
-- **Args**: `query`
-- **Behavior**: Runs raw VQL with no sanitization.
+- **Args**: `query`, `org_id`
+- **Behavior**: Runs one SELECT statement after syntax validation. Multiple statements and non-SELECT queries are rejected.
 
-`quarantine_host`
-- **Args**: `client_id`, `org_id`
-- **Behavior**: Initiates host quarantine.
-- **Underlying Artifact**: `Windows.Remediation.Quarantine` with `MessageBox="Host quarantined by MCP automation."`
+`export_vql`
+- **Args**: `query`, `filepath`, `max_file_mb`, `org_id`
+- **Behavior**: Runs one validated SELECT statement and streams rows to rolling JSONL files.
 
-`unquarantine_host`
-- **Args**: `client_id`, `org_id`
-- **Behavior**: Removes host quarantine.
-- **Underlying Artifact**: `Windows.Remediation.Quarantine` with `RemovePolicy="Y"`
-
-`kill_process`
-- **Args**: `client_id`, `pid`, `org_id`
-- **Behavior**: Kills a process by PID.
-- **Underlying Artifact**: `Generic.Utils.KillProcess` with `Pid=PID`
-
-Current standard:
-- dangerous tools should disappear from `tools/list` entirely when disabled;
-- the disabled-tool denylist still applies even when dangerous mode is on.
+The disabled-tool denylist still applies to these tools.
 
 ### 6.7 Recommended Implementation and Call Order
 
@@ -898,29 +841,27 @@ Implement tools in dependency order, not by perceived user importance. Discovery
 Recommended implementation order:
 
 1. `list_orgs`
-2. `client_info`
-3. `list_clients`
-4. `list_artifacts`
-5. `artifact_details`
-6. `collect_artifact`
-7. `get_collection_results`
-8. `realtime_collect`
-9. `hunt_across_fleet`
+2. `clients`
+3. `list_artifacts`
+4. `artifact_details`
+5. `collect_artifact`
+6. `get_collection_results`
+7. `realtime_collect`
+8. `hunts`
+9. `list_hunt_flows`
 10. `get_hunt_results`
 11. `run_vql`
-12. `quarantine_host`
-13. `unquarantine_host`
-14. `kill_process`
+12. `export_vql`
 
 Rationale:
 - `list_orgs` is the simplest multi-tenant primitive and validates org scoping before more complex tools exist.
-- `client_info` and `list_clients` establish the endpoint discovery layer needed to obtain valid `client_id` values.
+- `clients` establishes the endpoint discovery and exact-lookup layer needed to obtain valid `client_id` values.
 - `list_artifacts` and `artifact_details` establish the artifact discovery layer needed to obtain valid artifact names, parameters, and source names.
 - `collect_artifact` is the first core action tool and should not be built before both discovery layers are stable.
 - `get_collection_results` depends on collection behavior and is more complex because it must handle polling, multi-source artifacts, and partial results.
 - `realtime_collect` is a convenience path for curated fast artifacts, not the baseline collection flow.
 - hunt tools come after single-endpoint collection because they are broader in blast radius and more complex operationally.
-- dangerous tools come last because they bypass or weaken the normal safety model.
+- read-only VQL tools come last because they are intentionally broader than the structured tools.
 
 Shared helper milestones should be completed in parallel with the above order:
 
@@ -932,14 +873,14 @@ Shared helper milestones should be completed in parallel with the above order:
 6. schema builder helpers
 7. polling helpers for flows
 8. hunt helper routines
-9. dangerous-tool gating
+9. read-only VQL validation
 
 Intended LLM call order for common workflows:
 
 Standard endpoint collection:
 
 1. `list_orgs` if tenant is unknown
-2. `client_info` or `list_clients`
+2. `clients`
 3. `list_artifacts` or `artifact_details`
 4. `collect_artifact`
 5. `get_collection_results`
@@ -947,7 +888,7 @@ Standard endpoint collection:
 Fast curated artifact collection:
 
 1. `list_orgs` if tenant is unknown
-2. `client_info`
+2. `clients`
 3. `artifact_details`
 4. `realtime_collect`
 
@@ -956,13 +897,13 @@ Fleet-wide hunt workflow:
 1. `list_orgs` if tenant is unknown
 2. `list_artifacts`
 3. `artifact_details`
-4. `hunt_across_fleet`
+4. `hunts`
 5. `get_hunt_results`
 
 Design rule:
 - discovery tools first;
 - execution tools second;
-- unrestricted or remediation tools last.
+- broad read-only VQL tools last.
 
 ---
 
@@ -1148,16 +1089,14 @@ Three input surfaces need separate handling:
 
 Never treat escaping as sufficient for field selectors or artifact identifiers.
 
-### 10.2 Dangerous Tool Gating
+### 10.2 Read-only VQL Validation
 
-Two independent controls:
+Ad hoc VQL tools accept one `SELECT` statement after leading whitespace and comments.
+They reject empty input, non-SELECT statements, and multiple statements before dispatch.
+This is a syntax-level guardrail; plugin behavior inside a SELECT is still governed by
+Velociraptor.
 
-1. `ENABLE_DANGEROUS_TOOLS=true`
-2. `VELOCIRAPTOR_DISABLED_TOOLS=...`
-
-This allows:
-- globally enabling dangerous mode for trusted environments;
-- selectively suppressing individual tools even in those environments.
+`VELOCIRAPTOR_DISABLED_TOOLS=...` remains available for selectively hiding tools.
 
 ### 10.3 mTLS
 
@@ -1205,7 +1144,7 @@ Rule:
 - Use strict JSON argument decoding with `DisallowUnknownFields`.
 - Set `"additionalProperties": false` on every input schema.
 - Use typed input structs with `Validate()`.
-- Centralize disabled-tool and dangerous-tool gating.
+- Centralize disabled-tool filtering and read-only VQL validation.
 - Enforce truncation on every large tool response.
 - Log resolved non-secret config at startup.
 - Keep the gRPC client shared and long-lived.
@@ -1216,7 +1155,7 @@ Rule:
 - Returning raw Go errors from normal tool failures.
 - Silently ignoring unknown tool parameters.
 - Building VQL with raw string interpolation.
-- Registering dangerous tools by default.
+- Accepting unrestricted VQL without validation.
 - Treating all tools as having the same timeout.
 - Dumping huge raw result sets without truncation or compaction.
 
@@ -1238,17 +1177,17 @@ Rule:
 - [ ] `version.go` - build-time version string
 - [ ] all logs routed to logfile or `stderr`, never `stdout`
 - [ ] strict argument decoding enabled for every tool
-- [ ] dangerous tools gated and denylist-aware
+- [ ] read-only VQL validation and denylist-aware registration
 - [ ] truncation enforced on all large responses
 
 ### CLI (`cmd/raptor-cli/`)
-- [ ] `main.go` - cobra root, `--config`/`--org`/`--output`/`--dangerous` global flags
+- [ ] `main.go` - cobra root, `--config`/`--org`/`--output` global flags
 - [ ] `cmd_client.go` - `client info`, `client list`
 - [ ] `cmd_artifact.go` - `artifact list`, `artifact details`
 - [ ] `cmd_collect.go` - `collect`, `collect results`, `collect realtime`
 - [ ] `cmd_hunt.go` - `hunt run`, `hunt results`
 - [ ] `cmd_org.go` - `org list`
-- [ ] `cmd_vql.go` - `vql run` (gated by `--dangerous`)
+- [ ] `cmd_vql.go` - read-only `vql run` and `vql export`
 - [ ] `output.go` - table (default), JSON (`--output json`), YAML (`--output yaml`)
 - [ ] `version.go` - build-time version string
 
